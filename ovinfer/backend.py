@@ -236,7 +236,9 @@ class Backend:
         cfg = self._generation_config(temperature, top_p, max_tokens)
         with self._pipeline(model_id, "llm") as pipe:
             prompt = self._render_prompt(pipe, messages)
-            result = pipe.generate(prompt, cfg)
+            # og returns a plain str for str input; a 1-element list yields
+            # DecodedResults with texts and perf_metrics.
+            result = pipe.generate([prompt], cfg)
         return self._chat_result(result, cfg)
 
     def chat_stream(
@@ -278,7 +280,9 @@ class Backend:
             try:
                 with self._pipeline(model_id, "llm") as pipe:
                     prompt = self._render_prompt(pipe, messages)
-                    result = pipe.generate(prompt, cfg, on_token)
+                    # og returns a plain str for str input; a 1-element list yields
+                    # DecodedResults with texts and perf_metrics.
+                    result = pipe.generate([prompt], cfg, on_token)
                     outcome["result"] = self._chat_result(result, cfg)
             except BaseException as exc:  # propagated to the consuming thread
                 outcome["error"] = exc
