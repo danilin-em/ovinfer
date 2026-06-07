@@ -20,6 +20,11 @@ from .errors import PipelineNotImplemented
 
 _IMAGE_PART_TYPES = {"image_url", "input_image"}
 _QUEUE_END = object()
+# How long a cancelled stream waits for og to notice STOP. og only checks the
+# callback at token boundaries, so a cancel during NPU compile/prefill cannot
+# take effect immediately; past the timeout the daemon worker is left to
+# finish and release the per-pipeline lock on its own.
+_CANCEL_JOIN_TIMEOUT = 30.0
 
 
 @dataclass(frozen=True)
@@ -294,7 +299,7 @@ class Backend:
             # Client disconnected: ask og to stop at the next token, then wait
             # for the worker to release the device and the per-pipeline lock.
             cancel.set()
-            thread.join()
+            thread.join(timeout=_CANCEL_JOIN_TIMEOUT)
             raise
         thread.join()
         if "error" in outcome:
