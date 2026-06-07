@@ -67,7 +67,7 @@ def _run_server(args: argparse.Namespace) -> None:
 
     from .backend import Backend
     from .config import parse_device_map, parse_preload
-    from .errors import ConfigError
+    from .errors import OvinferError
     from .server import create_app
 
     try:
@@ -84,7 +84,8 @@ def _run_server(args: argparse.Namespace) -> None:
             ),
         )
         backend.preload_models()
-    except ConfigError as exc:
+    except OvinferError as exc:
+        # ConfigError, ModelNotFound during preload, ... — clean message, no traceback.
         raise SystemExit(f"ovinfer: {exc}") from None
     host, port = args.listen or ("127.0.0.1", 8000)
     uvicorn.run(create_app(backend), host=host, port=port)
