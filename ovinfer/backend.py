@@ -163,6 +163,77 @@ class Backend:
             return og.TextEmbeddingPipeline(model_dir, device)
         raise ValueError(f"Unknown pipeline kind: {kind!r}")
 
+    # -- chat ------------------------------------------------------------------
+
+    @staticmethod
+    def _render_prompt(pipe: Any, messages: list[dict[str, Any]]) -> str:
+        """Apply the model's own chat template to OpenAI-style messages."""
+        history = [
+            {"role": m["role"], "content": _flatten_content(m.get("content"))}
+            for m in messages
+        ]
+        return pipe.get_tokenizer().apply_chat_template(
+            history, add_generation_prompt=True
+        )
+
+    @staticmethod
+    def _generation_config(
+        temperature: float | None,
+        top_p: float | None,
+        max_tokens: int | None,
+    ) -> Any:
+        import openvino_genai as og
+
+        cfg = og.GenerationConfig()
+        cfg.max_new_tokens = max_tokens if max_tokens is not None else 512
+        if temperature is not None and temperature > 0:
+            cfg.do_sample = True
+            cfg.temperature = temperature
+            if top_p is not None:
+                cfg.top_p = top_p
+        # temperature == 0 or unset -> greedy. Deliberate deviation from
+        # OpenAI's temperature=1 default: deterministic local inference is
+        # more useful.
+        return cfg
+
+    @staticmethod
+    def _chat_result(result: Any, cfg: Any) -> ChatResult:
+        metrics = result.perf_metrics
+        completion_tokens = metrics.get_num_generated_tokens()
+        prompt_tokens = metrics.get_num_input_tokens()
+        finish_reason = (
+            "length" if completion_tokens >= cfg.max_new_tokens else "stop"
+        )
+        return ChatResult(
+            text=result.texts[0],
+            finish_reason=finish_reason,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+
+    def _check_chat_supported(self, messages: list[dict[str, Any]]) -> None:
+        if messages_have_images(messages):
+            raise PipelineNotImplemented("VLMPipeline")
+        if self.settings.use_continuous_batching:
+            raise PipelineNotImplemented("ContinuousBatchingPipeline")
+
+    def chat(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+    ) -> ChatResult:
+        """Blocking non-streaming chat completion."""
+        self._check_chat_supported(messages)
+        cfg = self._generation_config(temperature, top_p, max_tokens)
+        with self._pipeline(model_id, "llm") as pipe:
+            prompt = self._render_prompt(pipe, messages)
+            result = pipe.generate(prompt, cfg)
+        return self._chat_result(result, cfg)
+
     # -- not implemented in v0.1 (501 contract) ---------------------------------
 
     def _resolve(self, model_id: str) -> Path:
