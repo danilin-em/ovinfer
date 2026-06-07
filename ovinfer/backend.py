@@ -234,6 +234,73 @@ class Backend:
             result = pipe.generate(prompt, cfg)
         return self._chat_result(result, cfg)
 
+    def chat_stream(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+    ) -> Iterator[str]:
+        """Streaming chat: yields str deltas, returns the finish_reason.
+
+        The finish_reason comes back as the generator's return value
+        (PEP 380, StopIteration.value). Domain errors (404/501) are raised
+        eagerly here, before the transport sends response headers.
+        """
+        self._check_chat_supported(messages)
+        registry.resolve_model_dir(self.settings.models_root, model_id)
+        cfg = self._generation_config(temperature, top_p, max_tokens)
+        return self._chat_stream_gen(model_id, messages, cfg)
+
+    def _chat_stream_gen(
+        self, model_id: str, messages: list[dict[str, Any]], cfg: Any
+    ) -> Iterator[str]:
+        import openvino_genai as og
+
+        deltas: queue.Queue = queue.Queue()
+        cancel = threading.Event()
+        outcome: dict[str, Any] = {}
+
+        def on_token(delta: str) -> Any:
+            if cancel.is_set():
+                return og.StreamingStatus.STOP
+            deltas.put(delta)
+            return og.StreamingStatus.RUNNING
+
+        def worker() -> None:
+            try:
+                with self._pipeline(model_id, "llm") as pipe:
+                    prompt = self._render_prompt(pipe, messages)
+                    result = pipe.generate(prompt, cfg, on_token)
+                    outcome["result"] = self._chat_result(result, cfg)
+            except BaseException as exc:  # propagated to the consuming thread
+                outcome["error"] = exc
+            finally:
+                deltas.put(_QUEUE_END)
+
+        thread = threading.Thread(
+            target=worker, name=f"ovinfer-gen-{model_id}", daemon=True
+        )
+        thread.start()
+        try:
+            while True:
+                item = deltas.get()
+                if item is _QUEUE_END:
+                    break
+                yield item
+        except GeneratorExit:
+            # Client disconnected: ask og to stop at the next token, then wait
+            # for the worker to release the device and the per-pipeline lock.
+            cancel.set()
+            thread.join()
+            raise
+        thread.join()
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["result"].finish_reason
+
     # -- not implemented in v0.1 (501 contract) ---------------------------------
 
     def _resolve(self, model_id: str) -> Path:
