@@ -206,7 +206,9 @@ def create_app(backend: Backend) -> FastAPI:
         return JSONResponse(status_code=status, content=body)
 
     @app.get("/health")
-    def health() -> dict:
+    async def health() -> dict:
+        # async on purpose: runs on the event loop, immune to threadpool
+        # exhaustion while def routes are busy with blocking generation.
         return {"status": "ok"}
 
     @app.get("/v1/models")
@@ -230,7 +232,11 @@ def create_app(backend: Backend) -> FastAPI:
         params: dict[str, Any] = {
             "temperature": req.temperature,
             "top_p": req.top_p,
-            "max_tokens": req.max_completion_tokens or req.max_tokens,
+            "max_tokens": (
+                req.max_completion_tokens
+                if req.max_completion_tokens is not None
+                else req.max_tokens
+            ),
         }
         if req.stream:
             # Domain errors (404/501) raise here, before headers go out.
