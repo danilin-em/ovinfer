@@ -137,13 +137,20 @@ class Backend:
         Resolution happens before touching the cache (a 404 must not insert
         or evict entries). Creation happens under the per-pipeline lock but
         outside the global cache lock, so loading one model does not block
-        requests to other models.
+        requests to other models. A failed creation removes the entry from
+        the cache: a permanently broken model must not pin an LRU slot.
         """
         model_dir = registry.resolve_model_dir(self.settings.models_root, model_id)
         entry = self._entry(model_id, kind)
         with entry.lock:
             if entry.pipeline is None:
-                entry.pipeline = self._create_pipeline(model_dir, model_id, kind)
+                try:
+                    entry.pipeline = self._create_pipeline(model_dir, model_id, kind)
+                except BaseException:
+                    with self._cache_lock:
+                        if self._cache.get((model_id, kind)) is entry:
+                            del self._cache[(model_id, kind)]
+                    raise
             yield entry.pipeline
 
     def _create_pipeline(self, model_dir: Path, model_id: str, kind: str) -> Any:
