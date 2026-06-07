@@ -75,7 +75,7 @@ def load_settings(
     if models_root is None:
         models_root = env.get(_ENV_PREFIX + "MODELS_ROOT") or default_models_root()
     if default_device is None:
-        default_device = env.get(_ENV_PREFIX + "DEVICE", "CPU")
+        default_device = env.get(_ENV_PREFIX + "DEVICE") or "CPU"
     if device_map is None:
         device_map = parse_device_map(env.get(_ENV_PREFIX + "DEVICE_MAP", ""))
     if preload is None:
