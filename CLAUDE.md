@@ -17,18 +17,17 @@ OpenVINO-кода — через `openvino-env <команда>` (см. глоб
 
 ## Состояние (2026-06-07, обновлять при смене фазы)
 
-- Контракт API финальный: `server.py` в корне — перенесённый из `~/.openvino` каркас,
-  все инференс-эндпоинты отвечают 501; при реализации v0.1 он растворяется в пакет
-  `ovinfer/` и удаляется.
-- Спека v0.1 **одобрена ревью пользователя 2026-06-07** (структура пакета,
-  sync-ядро, LRU-кеш пайплайнов, device-map/preload, LLM chat со стримингом,
-  embeddings, CLI): `docs/superpowers/specs/2026-06-07-ovinfer-v0.1-design.md`.
-  Итоги ревью: библиотечный путь и extras `[server]` убраны из v0.1; добавлены
-  `--device-map`, `--preload` и embeddings-пайплайн. Следующий шаг — навык
-  writing-plans, затем реализация.
+- **v0.1 реализован и принят 2026-06-07**: пакет `ovinfer/` (sync-ядро + транспорт),
+  LLM chat со стримингом и embeddings работают на реальных моделях; приёмка по
+  чек-листу спеки пройдена. План: `docs/superpowers/plans/2026-06-07-ovinfer-v0.1.md`.
+- Спека v0.1 (одобрена и реализована): `docs/superpowers/specs/2026-06-07-ovinfer-v0.1-design.md`.
 - Спека контракта (маппинг 11 og.*-пайплайнов на эндпоинты, схемы, ошибки, SSE):
   `docs/superpowers/specs/2026-06-06-openai-server-design.md`.
-- `pyproject.toml`, пакета и venv ещё нет — появятся по плану v0.1.
+- Нюанс этой машины: реальное дерево моделей —
+  `~/.openvino/models/huggingface.co/<org>/<model>` (три уровня), поэтому
+  `OVINFER_MODELS_ROOT=~/.openvino/models/huggingface.co`.
+- Следующие шаги: follow-up в `~/.openvino` (см. спеку, раздел «Связь с
+  ~/.openvino»); спека каталога моделей v0.2.
 
 ## Язык
 
