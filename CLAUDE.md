@@ -5,12 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Что это за проект
 
 ovinfer — самодостаточная платформа инференса на OpenVINO (openvino-genai):
-Python-библиотека + OpenAI-совместимый HTTP-сервер. Два пути использования:
-
-1. **Сервер**: `ovinfer server` (console-script, extra `[server]`) — любой
-   OpenAI-клиент ходит по HTTP.
-2. **Библиотека**: `uv add ovinfer` в свой проект, `from ovinfer import Backend` —
-   прямые вызовы без HTTP. Ядро синхронное, FastAPI в нём не импортируется.
+OpenAI-совместимый HTTP-сервер (`ovinfer server`, console-script) — любой
+OpenAI-клиент ходит по HTTP. Внутри пакет разделён на sync-ядро (`Backend`,
+без FastAPI-импортов) и тонкий транспорт; публичный библиотечный API
+(`uv add ovinfer`) отложен до реального потребителя — граница ядро/транспорт
+позволит открыть его дёшево.
 
 Проект выделен из `~/.openvino` (машинная обвязка vendored Intel-стека) — это **два
 разных проекта**; ovinfer про обвязку не знает. На этой машине любой запуск
@@ -21,9 +20,12 @@ OpenVINO-кода — через `openvino-env <команда>` (см. глоб
 - Контракт API финальный: `server.py` в корне — перенесённый из `~/.openvino` каркас,
   все инференс-эндпоинты отвечают 501; при реализации v0.1 он растворяется в пакет
   `ovinfer/` и удаляется.
-- Спека v0.1 (структура пакета, sync-ядро, LRU-кеш пайплайнов, LLM chat со
-  стримингом, CLI): `docs/superpowers/specs/2026-06-07-ovinfer-v0.1-design.md` —
-  **ждёт ревью пользователя**; после одобрения — навык writing-plans, затем реализация.
+- Спека v0.1 **одобрена ревью пользователя 2026-06-07** (структура пакета,
+  sync-ядро, LRU-кеш пайплайнов, device-map/preload, LLM chat со стримингом,
+  embeddings, CLI): `docs/superpowers/specs/2026-06-07-ovinfer-v0.1-design.md`.
+  Итоги ревью: библиотечный путь и extras `[server]` убраны из v0.1; добавлены
+  `--device-map`, `--preload` и embeddings-пайплайн. Следующий шаг — навык
+  writing-plans, затем реализация.
 - Спека контракта (маппинг 11 og.*-пайплайнов на эндпоинты, схемы, ошибки, SSE):
   `docs/superpowers/specs/2026-06-06-openai-server-design.md`.
 - `pyproject.toml`, пакета и venv ещё нет — появятся по плану v0.1.
