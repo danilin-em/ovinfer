@@ -306,6 +306,19 @@ class Backend:
             raise outcome["error"]
         return outcome["result"].finish_reason
 
+    # -- embeddings ---------------------------------------------------------------
+
+    def embed(self, model_id: str, texts: list[str]) -> EmbedResult:
+        """Embed a batch of texts; vectors come back in input order.
+
+        og does not expose token counts for the embedding pipeline, so
+        prompt_tokens is 0 (best-effort per spec).
+        """
+        with self._pipeline(model_id, "embedding") as pipe:
+            raw = pipe.embed_documents(texts)
+            vectors = [[float(x) for x in vec] for vec in raw]
+        return EmbedResult(vectors=vectors, prompt_tokens=0)
+
     # -- not implemented in v0.1 (501 contract) ---------------------------------
 
     def _resolve(self, model_id: str) -> Path:
