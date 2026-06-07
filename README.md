@@ -26,6 +26,7 @@ CLI arguments > `OVINFER_*` environment variables > defaults.
 | Per-model devices | `--device-map MODEL=DEV[,...]` | `OVINFER_DEVICE_MAP` | empty |
 | Warm-up models | `--preload MODEL[:KIND][,...]` | `OVINFER_PRELOAD` | empty |
 | Pipeline cache size | — | `OVINFER_MAX_PIPELINES` | `max(2, len(preload))` |
+| Continuous batching | — | `OVINFER_USE_CONTINUOUS_BATCHING` | `0` (the CB path answers 501 in v0.1) |
 
 Models live as `<models-root>/<org>/<model>` OpenVINO IR directories; the
 OpenAI `model` field is the `org/model` relative path.
