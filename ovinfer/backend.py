@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-from . import config, registry
+from . import config, npu, registry
 from .errors import PipelineNotImplemented
 
 _IMAGE_PART_TYPES = {"image_url", "input_image"}
@@ -162,6 +162,10 @@ class Backend:
         import openvino_genai as og
 
         device = self._device_for(model_id)
+        # Warn-only NPU preflight: a clear heads-up before a known-doomed NPU
+        # build, instead of a raw compiler traceback (LLM) or a request-time
+        # 500 (embedding). Does not change the device or block the attempt.
+        npu.warn_if_incompatible(model_id, model_dir, kind, device)
         if kind == "llm":
             return og.LLMPipeline(model_dir, device)
         if kind == "embedding":
