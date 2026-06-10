@@ -10,7 +10,7 @@ Pipeline-to-endpoint mapping (see docs/superpowers/specs/2026-06-06-openai-serve
     VLMPipeline                -> POST /v1/chat/completions          (501, image parts)
     ContinuousBatchingPipeline -> same chat endpoint, alt backend    (501, env flag)
     TextEmbeddingPipeline      -> POST /v1/embeddings                (implemented)
-    TextRerankPipeline         -> POST /v1/rerank                    (501)
+    TextRerankPipeline         -> POST /v1/rerank                    (implemented)
     Text2ImagePipeline         -> POST /v1/images/generations        (501)
     Image2ImagePipeline        -> POST /v1/images/edits              (501)
     InpaintingPipeline         -> POST /v1/images/edits (mask)       (501)
@@ -28,7 +28,7 @@ from typing import Any, Iterator, Literal
 
 from fastapi import FastAPI, File, Form, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
 from .backend import Backend, ChatResult
@@ -88,7 +88,7 @@ class RerankRequest(BaseModel):
     model: str
     query: str
     documents: list[str | dict[str, Any]]
-    top_n: int | None = None
+    top_n: int | None = Field(None, ge=1)
 
 
 class ImagesGenerationRequest(BaseModel):
@@ -283,7 +283,40 @@ def create_app(backend: Backend) -> FastAPI:
 
     @app.post("/v1/rerank")
     def rerank(req: RerankRequest) -> Any:
-        return backend.rerank(req.model, req.query, req.documents, req.top_n)
+        # Cohere/Jina convention: a document is a string or {"text": ...}.
+        texts: list[str] = []
+        for doc in req.documents:
+            if isinstance(doc, str):
+                texts.append(doc)
+            elif "text" in doc:
+                texts.append(str(doc["text"]))
+            else:
+                return JSONResponse(
+                    status_code=400,
+                    content=_error_body(
+                        "Each document must be a string or an object "
+                        "with a 'text' field",
+                        "invalid_request_error",
+                        "unsupported_input",
+                    ),
+                )
+        result = backend.rerank(req.model, req.query, texts, req.top_n)
+        return {
+            "model": req.model,
+            "results": [
+                {
+                    "index": index,
+                    "relevance_score": score,
+                    # index is backend-authoritative; og always returns indices in
+                    # range(len(texts)). An out-of-range index is a backend bug.
+                    "document": {"text": texts[index]},
+                }
+                for index, score in result.results
+            ],
+            # og exposes no token counts for rerank; zeros are best-effort,
+            # same as embeddings.
+            "usage": {"prompt_tokens": 0, "total_tokens": 0},
+        }
 
     @app.post("/v1/images/generations")
     def images_generations(req: ImagesGenerationRequest) -> Any:
