@@ -3,8 +3,8 @@
 reject_reason(model_dir, kind) returns a human-readable reason string when a
 (model, kind) is known to fail on NPU, or None when it should be left alone.
 The heuristic is deliberately conservative: it only flags cases verified
-empirically (group-wise int4 LLMs fail to compile; embeddings fail at inference
-due to NPU's static-shape requirement).
+empirically (group-wise int4 LLMs fail to compile; embeddings and rerankers
+fail at inference due to NPU's static-shape requirement).
 """
 
 import tempfile
@@ -51,6 +51,13 @@ class RejectReasonTest(unittest.TestCase):
         # Compiles on NPU but fails at inference (NPUW static shape); the only
         # case the compiler itself does not catch, so the preflight must.
         reason = npu.reject_reason(_model_dir(_CHANNELWISE), "embedding")
+        self.assertIsNotNone(reason)
+        self.assertIn("static", reason.lower())
+
+    def test_rerank_on_npu_is_flagged(self):
+        # Cross-encoder rerankers share the embedding failure mode: dynamic
+        # shapes vs NPU's static-shape requirement, failing at request time.
+        reason = npu.reject_reason(_model_dir(_INT8), "rerank")
         self.assertIsNotNone(reason)
         self.assertIn("static", reason.lower())
 

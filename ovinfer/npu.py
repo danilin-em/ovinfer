@@ -43,10 +43,10 @@ def reject_reason(model_dir: Path, kind: str) -> str | None:
     Conservative: only flags empirically verified failures. Callers apply this
     only once the resolved device is NPU.
     """
-    if kind == "embedding":
+    if kind in ("embedding", "rerank"):
         return (
-            "embedding pipelines need dynamic input shapes, but NPU requires "
-            "static shapes (NPUW) — inference fails at request time"
+            "embedding and rerank pipelines need dynamic input shapes, but NPU "
+            "requires static shapes (NPUW) — inference fails at request time"
         )
     if kind == "llm":
         mode, group_size = _weight_compression(model_dir)
