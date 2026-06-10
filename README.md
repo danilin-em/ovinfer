@@ -2,8 +2,9 @@
 
 Self-contained OpenVINO GenAI inference server with an OpenAI-compatible API.
 
-v0.1 implements LLM chat (streaming and non-streaming) and text embeddings;
-the remaining endpoints of the contract respond 501 until their pipelines land.
+v0.1 implements LLM chat (streaming and non-streaming), text embeddings, and
+text rerank (`POST /v1/rerank`, Jina-style response); the remaining endpoints
+of the contract respond 501 until their pipelines land.
 
 ## Install & run
 

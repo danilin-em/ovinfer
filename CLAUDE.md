@@ -20,6 +20,8 @@ OpenVINO-кода — через `openvino-env <команда>` (см. глоб
 - **v0.1 реализован и принят 2026-06-07**: пакет `ovinfer/` (sync-ядро + транспорт),
   LLM chat со стримингом и embeddings работают на реальных моделях; приёмка по
   чек-листу спеки пройдена. План: `docs/superpowers/plans/2026-06-07-ovinfer-v0.1.md`.
+- **Rerank реализован 2026-06-10**: `POST /v1/rerank` через og.TextRerankPipeline
+  (Jina-формат ответа); спека: `docs/superpowers/specs/2026-06-10-rerank-design.md`.
 - Спека v0.1 (одобрена и реализована): `docs/superpowers/specs/2026-06-07-ovinfer-v0.1-design.md`.
 - Спека контракта (маппинг 11 og.*-пайплайнов на эндпоинты, схемы, ошибки, SSE):
   `docs/superpowers/specs/2026-06-06-openai-server-design.md`.
