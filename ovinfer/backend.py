@@ -25,6 +25,11 @@ _QUEUE_END = object()
 # take effect immediately; past the timeout the daemon worker is left to
 # finish and release the per-pipeline lock on its own.
 _CANCEL_JOIN_TIMEOUT = 30.0
+# og's default TextRerankPipeline.Config().top_n is 3: without an explicit
+# config the pipeline silently truncates output. The API's top_n is
+# per-request, but og fixes it at pipeline construction — so the pipeline
+# is built effectively unbounded and rerank() slices in Python.
+_RERANK_TOP_N_MAX = 2**31 - 1
 
 
 @dataclass(frozen=True)
@@ -39,6 +44,12 @@ class ChatResult:
 class EmbedResult:
     vectors: list[list[float]]
     prompt_tokens: int
+
+
+@dataclass(frozen=True)
+class RerankResult:
+    # (document index, relevance score) sorted by score descending.
+    results: list[tuple[int, float]]
 
 
 def messages_have_images(messages: list[dict[str, Any]]) -> bool:
@@ -164,12 +175,16 @@ class Backend:
         device = self._device_for(model_id)
         # Warn-only NPU preflight: a clear heads-up before a known-doomed NPU
         # build, instead of a raw compiler traceback (LLM) or a request-time
-        # 500 (embedding). Does not change the device or block the attempt.
+        # 500 (embedding, rerank). Does not change the device or block the attempt.
         npu.warn_if_incompatible(model_id, model_dir, kind, device)
         if kind == "llm":
             return og.LLMPipeline(model_dir, device)
         if kind == "embedding":
             return og.TextEmbeddingPipeline(model_dir, device)
+        if kind == "rerank":
+            cfg = og.TextRerankPipeline.Config()
+            cfg.top_n = _RERANK_TOP_N_MAX
+            return og.TextRerankPipeline(model_dir, device, cfg)
         raise ValueError(f"Unknown pipeline kind: {kind!r}")
 
     # -- chat ------------------------------------------------------------------
@@ -327,20 +342,36 @@ class Backend:
             vectors = [[float(x) for x in vec] for vec in raw]
         return EmbedResult(vectors=vectors, prompt_tokens=0)
 
-    # -- not implemented in v0.1 (501 contract) ---------------------------------
-
-    def _resolve(self, model_id: str) -> Path:
-        return registry.resolve_model_dir(self.settings.models_root, model_id)
+    # -- rerank -------------------------------------------------------------------
 
     def rerank(
         self,
         model_id: str,
         query: str,
-        documents: list[Any],
+        texts: list[str],
         top_n: int | None = None,
-    ) -> dict:
-        self._resolve(model_id)
-        raise PipelineNotImplemented("TextRerankPipeline")
+    ) -> RerankResult:
+        """Rerank texts against the query; results sorted by score descending.
+
+        Resolution runs first so an unknown model 404s even for an empty
+        batch, which is answered without touching the pipeline cache.
+        """
+        # Resolve first: a 404 must surface even when texts is empty
+        # (no pipeline call follows).
+        registry.resolve_model_dir(self.settings.models_root, model_id)
+        if not texts:
+            return RerankResult(results=[])
+        with self._pipeline(model_id, "rerank") as pipe:
+            raw = pipe.rerank(query, texts)
+        results = [(int(i), float(s)) for i, s in raw]
+        if top_n is not None:
+            results = results[:top_n]
+        return RerankResult(results=results)
+
+    # -- not implemented in v0.1 (501 contract) ---------------------------------
+
+    def _resolve(self, model_id: str) -> Path:
+        return registry.resolve_model_dir(self.settings.models_root, model_id)
 
     def image_generate(
         self,

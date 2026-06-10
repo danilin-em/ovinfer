@@ -50,7 +50,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     server.add_argument(
         "--preload", default=None, metavar="MODEL[:KIND][,...]",
-        help="models to warm up at startup (kind: llm|embedding, default llm)",
+        help="models to warm up at startup (kind: llm|embedding|rerank, default llm)",
     )
     server.add_argument(
         "--models-root", default=None, metavar="PATH",
