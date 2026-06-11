@@ -370,13 +370,20 @@ class Backend:
         """Run one generation. VLM gets a single templated prompt string plus
         image tensors with apply_chat_template disabled (we render the template
         ourselves); LLM keeps the 1-element-list form. on_token, when given, is
-        the streaming callback."""
+        the streaming callback. `messages` is used only by the LLM path
+        (_render_prompt); the VLM path renders from `prepared`.
+
+        Both paths omit the streamer argument entirely when not streaming,
+        rather than passing None, so the call shape matches og's own samples.
+        """
         if kind == "vlm":
             history, images = prepared
             prompt = pipe.get_tokenizer().apply_chat_template(
                 history, add_generation_prompt=True
             )
             cfg.apply_chat_template = False
+            if on_token is None:
+                return pipe.generate(prompt, images=images, generation_config=cfg)
             return pipe.generate(
                 prompt, images=images, generation_config=cfg, streamer=on_token
             )

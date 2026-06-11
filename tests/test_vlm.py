@@ -326,12 +326,14 @@ class DispatchTest(unittest.TestCase):
         root, model = _vlm_root()
         pipe = _FakeChatPipe()
         be = _DispatchBackend(root, pipe)
-        be.chat(model, [{"role": "user", "content": "hi"}])
+        result = be.chat(model, [{"role": "user", "content": "hi"}])
         self.assertEqual(be.pipeline_requests, [(model, "vlm")])
         call = pipe.generate_calls[0]
         self.assertEqual(call["prompt"], "TPL:user=hi")  # plain str, not a list
         self.assertEqual(call["images"], [])             # empty, not None
         self.assertFalse(call["cfg"].apply_chat_template)  # forced False for VLM
+        # _chat_result round-trips for VLM the same as LLM (2 tokens < 512 -> stop).
+        self.assertEqual(result.finish_reason, "stop")
 
     def test_image_to_llm_model_is_invalid_image_without_building_pipeline(self):
         root, model = _llm_root()
