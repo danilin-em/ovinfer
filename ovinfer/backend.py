@@ -160,7 +160,9 @@ def _load_image_tensor(url: str) -> Any:
 
     raw = _fetch_image_bytes(url)
     try:
-        pic = Image.open(io.BytesIO(raw)).convert("RGB")
+        pic = Image.open(io.BytesIO(raw))
+        pic.load()  # force decode now: truncated/broken data raises OSError here
+        pic = pic.convert("RGB")
     except (UnidentifiedImageError, OSError) as exc:
         raise InvalidImage(f"could not decode image: {exc}") from exc
     return ov.Tensor(np.array(pic))
