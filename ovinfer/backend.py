@@ -54,6 +54,11 @@ class RerankResult:
     results: list[tuple[int, float]]
 
 
+@dataclass(frozen=True)
+class ImageResult:
+    images: list[bytes]  # each entry is a PNG-encoded image
+
+
 def messages_have_images(messages: list[dict[str, Any]]) -> bool:
     """True if any message carries an image content part (VLM request)."""
     for msg in messages:
@@ -166,6 +171,27 @@ def _load_image_tensor(url: str) -> Any:
     except (UnidentifiedImageError, OSError) as exc:
         raise InvalidImage(f"could not decode image: {exc}") from exc
     return ov.Tensor(np.array(pic))
+
+
+def _encode_pngs(tensor: Any) -> list[bytes]:
+    """Encode an og image tensor (uint8 RGB, (N,H,W,3) or (H,W,3)) as PNG bytes.
+
+    A single-image result may arrive 3D; it is normalized to a 1-element batch.
+    """
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    arr = np.array(tensor)
+    if arr.ndim == 3:
+        arr = arr[np.newaxis, ...]
+    pngs: list[bytes] = []
+    for i in range(arr.shape[0]):
+        buf = io.BytesIO()
+        Image.fromarray(arr[i]).save(buf, format="PNG")
+        pngs.append(buf.getvalue())
+    return pngs
 
 
 class _CacheEntry:
