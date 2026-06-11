@@ -7,7 +7,7 @@ iterate_in_threadpool on its own.
 
 Pipeline-to-endpoint mapping (see docs/superpowers/specs/2026-06-06-openai-server-design.md):
     LLMPipeline                -> POST /v1/chat/completions          (implemented)
-    VLMPipeline                -> POST /v1/chat/completions          (501, image parts)
+    VLMPipeline                -> POST /v1/chat/completions          (implemented, image parts)
     ContinuousBatchingPipeline -> same chat endpoint, alt backend    (501, env flag)
     TextEmbeddingPipeline      -> POST /v1/embeddings                (implemented)
     TextRerankPipeline         -> POST /v1/rerank                    (implemented)
@@ -32,12 +32,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
 from .backend import Backend, ChatResult
-from .errors import ModelNotFound, OvinferError, PipelineNotImplemented
+from .errors import InvalidImage, ModelNotFound, OvinferError, PipelineNotImplemented
 
 # --- error mapping (the OpenAI error format is a transport detail) -----------
 
 _ERROR_MAP: dict[type, tuple[int, str, str]] = {
     ModelNotFound: (404, "invalid_request_error", "model_not_found"),
+    InvalidImage: (400, "invalid_request_error", "invalid_image"),
     PipelineNotImplemented: (501, "not_implemented", "pipeline_not_implemented"),
 }
 _DEFAULT_ERROR = (500, "internal_error", "internal_error")

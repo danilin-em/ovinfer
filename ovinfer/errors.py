@@ -21,5 +21,10 @@ class PipelineNotImplemented(OvinferError):
         self.pipeline = pipeline
 
 
+class InvalidImage(OvinferError):
+    """An image content part could not be loaded (bad/unsupported URL, decode
+    failure) or was sent to a model that has no vision encoder."""
+
+
 class ConfigError(OvinferError):
     """Invalid configuration (bad device-map syntax, preload over capacity, ...)."""
