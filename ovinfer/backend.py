@@ -136,6 +136,12 @@ def _fetch_image_bytes(url: str) -> bytes:
         import urllib.error
         import urllib.request
 
+        # No SSRF egress filtering: this fetch will follow a client-supplied URL
+        # to any host, including loopback/private/link-local addresses (e.g. cloud
+        # metadata). Deliberate for this local-first, no-auth server, where
+        # fetching images from localhost/LAN is a legitimate use case; revisit if
+        # the server is ever exposed beyond a trusted host. See the spec's
+        # "Безопасность" note.
         try:
             with urllib.request.urlopen(url, timeout=_IMAGE_FETCH_TIMEOUT) as resp:
                 return resp.read()
