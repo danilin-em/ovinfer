@@ -176,14 +176,17 @@ def _load_image_tensor(url: str) -> Any:
 def _encode_pngs(tensor: Any) -> list[bytes]:
     """Encode an og image tensor (uint8 RGB, (N,H,W,3) or (H,W,3)) as PNG bytes.
 
-    A single-image result may arrive 3D; it is normalized to a 1-element batch.
+    og returns an ov.Tensor; np.array() would wrap it as a 0-d object array, so
+    its backing numpy view (.data) is taken explicitly. A single-image result
+    may arrive 3D; it is normalized to a 1-element batch.
     """
     import io
 
     import numpy as np
+    import openvino as ov
     from PIL import Image
 
-    arr = np.array(tensor)
+    arr = np.asarray(tensor.data if isinstance(tensor, ov.Tensor) else tensor)
     if arr.ndim == 3:
         arr = arr[np.newaxis, ...]
     pngs: list[bytes] = []

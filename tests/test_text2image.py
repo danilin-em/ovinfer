@@ -135,6 +135,18 @@ class EncodePngsTest(unittest.TestCase):
         self.assertEqual(len(pngs), 1)
         self.assertTrue(pngs[0].startswith(b"\x89PNG"))
 
+    def test_ov_tensor_input_is_encoded(self):
+        # og.Text2ImagePipeline.generate returns an ov.Tensor, not a numpy
+        # array; np.array() would wrap it as a 0-d object array. Feed the real
+        # type so the conversion path is exercised (regression guard).
+        import openvino as ov
+
+        tensor = ov.Tensor(np.zeros((1, 4, 6, 3), dtype=np.uint8))
+        pngs = _encode_pngs(tensor)
+        self.assertEqual(len(pngs), 1)
+        self.assertTrue(pngs[0].startswith(b"\x89PNG"))
+        self.assertEqual(_decode_png(pngs[0]).size, (6, 4))
+
     def test_image_result_holds_png_list(self):
         r = ImageResult(images=[b"\x89PNG..."])
         self.assertEqual(r.images, [b"\x89PNG..."])
