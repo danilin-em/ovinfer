@@ -18,8 +18,8 @@ from PIL import Image
 from ovinfer import config
 from ovinfer import registry
 from ovinfer import server as server_mod
-from ovinfer.backend import ImageResult, _encode_pngs
-from ovinfer.errors import OvinferError, UnsupportedModel
+from ovinfer.backend import Backend, ImageResult, _encode_pngs
+from ovinfer.errors import ModelNotFound, OvinferError, UnsupportedModel
 
 
 def _diffusion_root(model: str = "org/diffuser") -> tuple[Path, str]:
@@ -106,6 +106,87 @@ class EncodePngsTest(unittest.TestCase):
     def test_image_result_holds_png_list(self):
         r = ImageResult(images=[b"\x89PNG..."])
         self.assertEqual(r.images, [b"\x89PNG..."])
+
+
+class _FakeT2IPipe:
+    """Stands in for og.Text2ImagePipeline: records generate kwargs, returns
+    a fake (N,H,W,3) uint8 tensor sized to num_images_per_prompt."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def generate(self, prompt, **kwargs):
+        self.calls.append({"prompt": prompt, "kwargs": kwargs})
+        n = kwargs.get("num_images_per_prompt", 1)
+        return np.zeros((n, 4, 4, 3), dtype=np.uint8)
+
+
+class _DispatchBackend(Backend):
+    """Real Backend with _pipeline stubbed; records (model_id, kind) requests."""
+
+    def __init__(self, models_root: Path, pipe: _FakeT2IPipe) -> None:
+        super().__init__(models_root=models_root, default_device="CPU")
+        self._pipe = pipe
+        self.pipeline_requests: list[tuple[str, str]] = []
+
+    @contextmanager
+    def _pipeline(self, model_id, kind):
+        self.pipeline_requests.append((model_id, kind))
+        yield self._pipe
+
+
+class ImageGenerateTest(unittest.TestCase):
+    def test_requests_text2image_kind_and_returns_pngs(self):
+        root, model = _diffusion_root()
+        pipe = _FakeT2IPipe()
+        be = _DispatchBackend(root, pipe)
+        result = be.image_generate(model, "a cat", n=2)
+        self.assertIsInstance(result, ImageResult)
+        self.assertEqual(len(result.images), 2)
+        self.assertTrue(result.images[0].startswith(b"\x89PNG"))
+        self.assertEqual(be.pipeline_requests, [(model, "text2image")])
+
+    def test_only_set_params_reach_generate(self):
+        root, model = _diffusion_root()
+        pipe = _FakeT2IPipe()
+        be = _DispatchBackend(root, pipe)
+        be.image_generate(model, "x")
+        # Omitted optionals must not appear (so og defaults are not clobbered).
+        self.assertEqual(pipe.calls[0]["kwargs"], {"num_images_per_prompt": 1})
+        self.assertEqual(pipe.calls[0]["prompt"], "x")
+
+    def test_all_params_map_to_og_kwargs(self):
+        root, model = _diffusion_root()
+        pipe = _FakeT2IPipe()
+        be = _DispatchBackend(root, pipe)
+        be.image_generate(
+            model, "x", n=3, width=512, height=768,
+            num_inference_steps=8, guidance_scale=0.0,
+            negative_prompt="blurry", seed=7,
+        )
+        self.assertEqual(pipe.calls[0]["kwargs"], {
+            "num_images_per_prompt": 3,
+            "width": 512,
+            "height": 768,
+            "num_inference_steps": 8,
+            "guidance_scale": 0.0,   # 0.0 must pass through, not be dropped
+            "negative_prompt": "blurry",
+            "rng_seed": 7,
+        })
+
+    def test_non_diffusion_model_is_unsupported_without_building_pipeline(self):
+        root, model = _llm_root()
+        be = _DispatchBackend(root, _FakeT2IPipe())
+        with self.assertRaises(UnsupportedModel):
+            be.image_generate(model, "x")
+        self.assertEqual(be.pipeline_requests, [])
+
+    def test_unknown_model_404s_before_any_pipeline(self):
+        root, _ = _diffusion_root()
+        be = _DispatchBackend(root, _FakeT2IPipe())
+        with self.assertRaises(ModelNotFound):
+            be.image_generate("org/ghost", "x")
+        self.assertEqual(be.pipeline_requests, [])
 
 
 if __name__ == "__main__":

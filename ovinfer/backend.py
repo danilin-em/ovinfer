@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from . import config, npu, registry
-from .errors import InvalidImage, PipelineNotImplemented
+from .errors import InvalidImage, PipelineNotImplemented, UnsupportedModel
 
 _IMAGE_PART_TYPES = {"image_url", "input_image"}
 _QUEUE_END = object()
@@ -307,6 +307,8 @@ class Backend:
             cfg = og.TextRerankPipeline.Config()
             cfg.top_n = _RERANK_TOP_N_MAX
             return og.TextRerankPipeline(model_dir, device, cfg)
+        if kind == "text2image":
+            return og.Text2ImagePipeline(model_dir, device)
         raise ValueError(f"Unknown pipeline kind: {kind!r}")
 
     # -- chat ------------------------------------------------------------------
@@ -554,12 +556,44 @@ class Backend:
         self,
         model_id: str,
         prompt: str,
+        *,
         n: int = 1,
-        size: str | None = None,
-        response_format: str = "b64_json",
-    ) -> dict:
-        self._resolve(model_id)
-        raise PipelineNotImplemented("Text2ImagePipeline")
+        width: int | None = None,
+        height: int | None = None,
+        num_inference_steps: int | None = None,
+        guidance_scale: float | None = None,
+        negative_prompt: str | None = None,
+        seed: int | None = None,
+    ) -> ImageResult:
+        """Text-to-image generation via og.Text2ImagePipeline.
+
+        Resolution (404) and the diffusion-model check (400 UnsupportedModel)
+        run before the pipeline is built. Only explicitly-set diffusion params
+        are forwarded so og's own defaults are not clobbered; guidance_scale=0.0
+        is forwarded (it is a meaningful value for CFG-distilled turbo models).
+        """
+        model_dir = registry.resolve_model_dir(self.settings.models_root, model_id)
+        if not registry.is_diffusion_model(model_dir):
+            raise UnsupportedModel(
+                f"model '{model_id}' is not a diffusion model "
+                "and cannot generate images"
+            )
+        kwargs: dict[str, Any] = {"num_images_per_prompt": n}
+        if width is not None:
+            kwargs["width"] = width
+        if height is not None:
+            kwargs["height"] = height
+        if num_inference_steps is not None:
+            kwargs["num_inference_steps"] = num_inference_steps
+        if guidance_scale is not None:
+            kwargs["guidance_scale"] = guidance_scale
+        if negative_prompt is not None:
+            kwargs["negative_prompt"] = negative_prompt
+        if seed is not None:
+            kwargs["rng_seed"] = seed
+        with self._pipeline(model_id, "text2image") as pipe:
+            tensor = pipe.generate(prompt, **kwargs)
+        return ImageResult(images=_encode_pngs(tensor))
 
     def image_edit(
         self,
