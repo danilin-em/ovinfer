@@ -28,6 +28,18 @@ OpenVINO-кода — через `openvino-env <команда>` (см. глоб
   data:/http(s) URL (приёмка на `gemma-3-4b-it-int4-cw-ov`). Спека:
   `docs/superpowers/specs/2026-06-10-vlm-design.md`; план:
   `docs/superpowers/plans/2026-06-11-vlm.md`.
+- **Text2Image реализован и принят 2026-06-11**: `og.Text2ImagePipeline` на
+  `POST /v1/images/generations` — диффузионная модель (есть `model_index.json`)
+  отдаёт PNG (`b64_json`/data-URL); диффузионные «ручки» (`num_inference_steps`,
+  `guidance_scale`, `negative_prompt`, `seed`) как опциональные поля-расширения.
+  Приёмка end-to-end на `OpenVINO/LCM_Dreamshaper_v7-int8-ov` (4 шага, 512×512,
+  CPU). **Важно: `og.Text2ImagePipeline` поддерживает только SD/SDXL/SD3/Flux/LCM**
+  — у локальной `hsuwill000/Z-Image-Turbo-ov` `_class_name: ZImagePipeline`, og
+  её не знает (нужен `optimum-intel`/`OVZImagePipeline`, другой рантайм). Модель с
+  `model_index.json`, но неподдерживаемой og архитектурой даёт 500 (как любая
+  несобираемая модель; чистые build-ошибки — follow-up для всех пайплайнов).
+  Спека: `docs/superpowers/specs/2026-06-11-text2image-design.md`; план:
+  `docs/superpowers/plans/2026-06-11-text2image.md`.
 - Спека v0.1 (одобрена и реализована): `docs/superpowers/specs/2026-06-07-ovinfer-v0.1-design.md`.
 - Спека контракта (маппинг 11 og.*-пайплайнов на эндпоинты, схемы, ошибки, SSE):
   `docs/superpowers/specs/2026-06-06-openai-server-design.md`.

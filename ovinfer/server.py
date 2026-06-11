@@ -11,7 +11,7 @@ Pipeline-to-endpoint mapping (see docs/superpowers/specs/2026-06-06-openai-serve
     ContinuousBatchingPipeline -> same chat endpoint, alt backend    (501, env flag)
     TextEmbeddingPipeline      -> POST /v1/embeddings                (implemented)
     TextRerankPipeline         -> POST /v1/rerank                    (implemented)
-    Text2ImagePipeline         -> POST /v1/images/generations        (501)
+    Text2ImagePipeline         -> POST /v1/images/generations        (implemented)
     Image2ImagePipeline        -> POST /v1/images/edits              (501)
     InpaintingPipeline         -> POST /v1/images/edits (mask)       (501)
     WhisperPipeline            -> POST /v1/audio/transcriptions|translations (501)
@@ -32,13 +32,20 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
 from .backend import Backend, ChatResult
-from .errors import InvalidImage, ModelNotFound, OvinferError, PipelineNotImplemented
+from .errors import (
+    InvalidImage,
+    ModelNotFound,
+    OvinferError,
+    PipelineNotImplemented,
+    UnsupportedModel,
+)
 
 # --- error mapping (the OpenAI error format is a transport detail) -----------
 
 _ERROR_MAP: dict[type, tuple[int, str, str]] = {
     ModelNotFound: (404, "invalid_request_error", "model_not_found"),
     InvalidImage: (400, "invalid_request_error", "invalid_image"),
+    UnsupportedModel: (400, "invalid_request_error", "unsupported_model"),
     PipelineNotImplemented: (501, "not_implemented", "pipeline_not_implemented"),
 }
 _DEFAULT_ERROR = (500, "internal_error", "internal_error")
@@ -97,9 +104,15 @@ class ImagesGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     model: str
     prompt: str
-    n: int = 1
+    n: int = Field(1, ge=1)
     size: str | None = None
     response_format: Literal["url", "b64_json"] = "b64_json"
+    # Diffusion knobs (not in OpenAI's schema): forwarded to og when set, so
+    # CFG-distilled turbo models (e.g. Z-Image-Turbo) can be tuned per request.
+    num_inference_steps: int | None = None
+    guidance_scale: float | None = None
+    negative_prompt: str | None = None
+    seed: int | None = None
 
 
 class SpeechRequest(BaseModel):
@@ -195,6 +208,34 @@ def _encode_embedding(vector: list[float], encoding_format: str) -> Any:
         packed = struct.pack(f"<{len(vector)}f", *vector)
         return base64.b64encode(packed).decode("ascii")
     return vector
+
+
+def _parse_size(size: str | None) -> tuple[int | None, int | None]:
+    """Parse OpenAI 'WIDTHxHEIGHT' into (width, height).
+
+    None or 'auto' -> (None, None): the backend omits width/height and og uses
+    the model default. A malformed value raises ValueError (mapped to 400).
+    """
+    if size is None or size == "auto":
+        return None, None
+    width, sep, height = size.partition("x")
+    if not sep:
+        raise ValueError(f"invalid size {size!r}, expected WIDTHxHEIGHT")
+    try:
+        return int(width), int(height)
+    except ValueError:
+        raise ValueError(
+            f"invalid size {size!r}, expected WIDTHxHEIGHT"
+        ) from None
+
+
+def _image_entry(png: bytes, response_format: str) -> dict:
+    """One OpenAI images `data` entry. response_format='url' yields a data: URL
+    (this server hosts no files); 'b64_json' yields the PNG encoded as base64."""
+    b64 = base64.b64encode(png).decode("ascii")
+    if response_format == "url":
+        return {"url": "data:image/png;base64," + b64}
+    return {"b64_json": b64}
 
 
 # --- app factory ---------------------------------------------------------------
@@ -322,9 +363,30 @@ def create_app(backend: Backend) -> FastAPI:
 
     @app.post("/v1/images/generations")
     def images_generations(req: ImagesGenerationRequest) -> Any:
-        return backend.image_generate(
-            req.model, req.prompt, req.n, req.size, req.response_format
+        try:
+            width, height = _parse_size(req.size)
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=400,
+                content=_error_body(
+                    str(exc), "invalid_request_error", "invalid_size"
+                ),
+            )
+        result = backend.image_generate(
+            req.model,
+            req.prompt,
+            n=req.n,
+            width=width,
+            height=height,
+            num_inference_steps=req.num_inference_steps,
+            guidance_scale=req.guidance_scale,
+            negative_prompt=req.negative_prompt,
+            seed=req.seed,
         )
+        return {
+            "created": int(time.time()),
+            "data": [_image_entry(png, req.response_format) for png in result.images],
+        }
 
     @app.post("/v1/images/edits")
     def images_edits(
