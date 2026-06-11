@@ -171,7 +171,11 @@ class FetchImageBytesTest(unittest.TestCase):
 
 
 def _llm_root(model: str = "org/llm") -> tuple[Path, str]:
-    """Temp models_root holding a plain-LLM export (no vision IR)."""
+    """Temp models_root holding a plain-LLM export (no vision IR).
+
+    The *.xml file is required: list_models (used by resolve_model_dir) only
+    counts a dir as a model if it holds at least one *.xml — do not remove it.
+    """
     root = Path(tempfile.mkdtemp())
     d = root / model
     d.mkdir(parents=True)

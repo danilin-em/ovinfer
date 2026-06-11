@@ -48,5 +48,7 @@ def is_vlm_model(model_dir: Path) -> bool:
     language model; plain LLM exports do not. Chat requests for VLM models go
     to og.VLMPipeline (which also serves text-only prompts) rather than
     og.LLMPipeline, whose openvino_model.xml a VLM export lacks.
+
+    Returns False (not an error) for a nonexistent path.
     """
     return (model_dir / "openvino_vision_embeddings_model.xml").is_file()
