@@ -28,6 +28,13 @@ OpenVINO-кода — через `openvino-env <команда>` (см. глоб
   data:/http(s) URL (приёмка на `gemma-3-4b-it-int4-cw-ov`). Спека:
   `docs/superpowers/specs/2026-06-10-vlm-design.md`; план:
   `docs/superpowers/plans/2026-06-11-vlm.md`.
+- **Text2Image реализован 2026-06-11**: `og.Text2ImagePipeline` на
+  `POST /v1/images/generations` — диффузионная модель (есть `model_index.json`)
+  отдаёт PNG (`b64_json`/data-URL); диффузионные «ручки» (`num_inference_steps`,
+  `guidance_scale`, `negative_prompt`, `seed`) как опциональные поля-расширения
+  (turbo-модели тюнятся по-запросно). Приёмка на `hsuwill000/Z-Image-Turbo-ov`.
+  Спека: `docs/superpowers/specs/2026-06-11-text2image-design.md`; план:
+  `docs/superpowers/plans/2026-06-11-text2image.md`.
 - Спека v0.1 (одобрена и реализована): `docs/superpowers/specs/2026-06-07-ovinfer-v0.1-design.md`.
 - Спека контракта (маппинг 11 og.*-пайплайнов на эндпоинты, схемы, ошибки, SSE):
   `docs/superpowers/specs/2026-06-06-openai-server-design.md`.
