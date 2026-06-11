@@ -60,7 +60,8 @@ class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="allow")
     role: Literal["system", "user", "assistant", "tool"]
     # Plain string or a list of content parts ({"type": "text"|"image_url", ...});
-    # image content parts route the request to VLMPipeline (501 in v0.1).
+    # image content parts route the request to VLMPipeline; a non-VLM model
+    # given images returns 400 invalid_image.
     content: str | list[dict[str, Any]] | None = None
 
 
