@@ -204,6 +204,25 @@ def _encode_embedding(vector: list[float], encoding_format: str) -> Any:
     return vector
 
 
+def _parse_size(size: str | None) -> tuple[int | None, int | None]:
+    """Parse OpenAI 'WIDTHxHEIGHT' into (width, height).
+
+    None or 'auto' -> (None, None): the backend omits width/height and og uses
+    the model default. A malformed value raises ValueError (mapped to 400).
+    """
+    if size is None or size == "auto":
+        return None, None
+    width, sep, height = size.partition("x")
+    if not sep:
+        raise ValueError(f"invalid size {size!r}, expected WIDTHxHEIGHT")
+    try:
+        return int(width), int(height)
+    except ValueError:
+        raise ValueError(
+            f"invalid size {size!r}, expected WIDTHxHEIGHT"
+        ) from None
+
+
 # --- app factory ---------------------------------------------------------------
 
 def create_app(backend: Backend) -> FastAPI:

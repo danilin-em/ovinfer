@@ -189,5 +189,27 @@ class ImageGenerateTest(unittest.TestCase):
         self.assertEqual(be.pipeline_requests, [])
 
 
+class ParseSizeTest(unittest.TestCase):
+    def test_width_x_height(self):
+        self.assertEqual(server_mod._parse_size("1024x768"), (1024, 768))
+
+    def test_square(self):
+        self.assertEqual(server_mod._parse_size("512x512"), (512, 512))
+
+    def test_none_means_model_default(self):
+        self.assertEqual(server_mod._parse_size(None), (None, None))
+
+    def test_auto_means_model_default(self):
+        self.assertEqual(server_mod._parse_size("auto"), (None, None))
+
+    def test_missing_separator_raises(self):
+        with self.assertRaises(ValueError):
+            server_mod._parse_size("1024")
+
+    def test_non_integer_raises(self):
+        with self.assertRaises(ValueError):
+            server_mod._parse_size("axb")
+
+
 if __name__ == "__main__":
     unittest.main()
