@@ -372,12 +372,27 @@ class DispatchTest(unittest.TestCase):
 
 
 class StreamDispatchTest(unittest.TestCase):
+    @staticmethod
+    def _drain(gen):
+        """Collect yielded deltas and the generator's return value (the
+        finish_reason carried by StopIteration.value, PEP 380)."""
+        deltas = []
+        try:
+            while True:
+                deltas.append(next(gen))
+        except StopIteration as stop:
+            return deltas, stop.value
+
     def test_vlm_stream_uses_vlm_pipeline_and_yields_deltas(self):
         root, model = _vlm_root()
         pipe = _FakeChatPipe(deltas=["Hello", " world"])
         be = _DispatchBackend(root, pipe)
         gen = be.chat_stream(model, [{"role": "user", "content": "hi"}])
-        self.assertEqual(list(gen), ["Hello", " world"])
+        deltas, finish_reason = self._drain(gen)
+        self.assertEqual(deltas, ["Hello", " world"])
+        # _FakeResult reports 2 generated tokens vs max_new_tokens=512 -> "stop";
+        # confirms _chat_stream_gen propagates finish_reason as its return value.
+        self.assertEqual(finish_reason, "stop")
         self.assertEqual(be.pipeline_requests, [(model, "vlm")])
 
     def test_llm_stream_uses_llm_pipeline(self):
