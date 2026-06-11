@@ -11,7 +11,7 @@ Pipeline-to-endpoint mapping (see docs/superpowers/specs/2026-06-06-openai-serve
     ContinuousBatchingPipeline -> same chat endpoint, alt backend    (501, env flag)
     TextEmbeddingPipeline      -> POST /v1/embeddings                (implemented)
     TextRerankPipeline         -> POST /v1/rerank                    (implemented)
-    Text2ImagePipeline         -> POST /v1/images/generations        (501)
+    Text2ImagePipeline         -> POST /v1/images/generations        (implemented)
     Image2ImagePipeline        -> POST /v1/images/edits              (501)
     InpaintingPipeline         -> POST /v1/images/edits (mask)       (501)
     WhisperPipeline            -> POST /v1/audio/transcriptions|translations (501)
@@ -107,6 +107,12 @@ class ImagesGenerationRequest(BaseModel):
     n: int = 1
     size: str | None = None
     response_format: Literal["url", "b64_json"] = "b64_json"
+    # Diffusion knobs (not in OpenAI's schema): forwarded to og when set, so
+    # CFG-distilled turbo models (e.g. Z-Image-Turbo) can be tuned per request.
+    num_inference_steps: int | None = None
+    guidance_scale: float | None = None
+    negative_prompt: str | None = None
+    seed: int | None = None
 
 
 class SpeechRequest(BaseModel):
@@ -221,6 +227,15 @@ def _parse_size(size: str | None) -> tuple[int | None, int | None]:
         raise ValueError(
             f"invalid size {size!r}, expected WIDTHxHEIGHT"
         ) from None
+
+
+def _image_entry(png: bytes, response_format: str) -> dict:
+    """One OpenAI images `data` entry. response_format='url' yields a data: URL
+    (this server hosts no files); 'b64_json' yields the raw base64 PNG."""
+    b64 = base64.b64encode(png).decode("ascii")
+    if response_format == "url":
+        return {"url": "data:image/png;base64," + b64}
+    return {"b64_json": b64}
 
 
 # --- app factory ---------------------------------------------------------------
@@ -348,9 +363,30 @@ def create_app(backend: Backend) -> FastAPI:
 
     @app.post("/v1/images/generations")
     def images_generations(req: ImagesGenerationRequest) -> Any:
-        return backend.image_generate(
-            req.model, req.prompt, req.n, req.size, req.response_format
+        try:
+            width, height = _parse_size(req.size)
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=400,
+                content=_error_body(
+                    str(exc), "invalid_request_error", "invalid_size"
+                ),
+            )
+        result = backend.image_generate(
+            req.model,
+            req.prompt,
+            n=req.n,
+            width=width,
+            height=height,
+            num_inference_steps=req.num_inference_steps,
+            guidance_scale=req.guidance_scale,
+            negative_prompt=req.negative_prompt,
+            seed=req.seed,
         )
+        return {
+            "created": int(time.time()),
+            "data": [_image_entry(png, req.response_format) for png in result.images],
+        }
 
     @app.post("/v1/images/edits")
     def images_edits(

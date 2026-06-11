@@ -14,12 +14,14 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from fastapi.testclient import TestClient
 
 from ovinfer import config
 from ovinfer import registry
 from ovinfer import server as server_mod
 from ovinfer.backend import Backend, ImageResult, _encode_pngs
 from ovinfer.errors import ModelNotFound, OvinferError, UnsupportedModel
+from ovinfer.server import create_app
 
 
 def _diffusion_root(model: str = "org/diffuser") -> tuple[Path, str]:
@@ -47,6 +49,36 @@ def _llm_root(model: str = "org/llm") -> tuple[Path, str]:
 
 def _decode_png(data: bytes) -> Image.Image:
     return Image.open(io.BytesIO(data))
+
+
+MODEL = "org/diffuser"
+_PNG = b"\x89PNG\r\n\x1a\n-fake-png-bytes"
+
+
+class _StubImageBackend:
+    """Duck-typed Backend for transport tests; records image_generate calls."""
+
+    def __init__(self, result_or_exc) -> None:
+        self.result_or_exc = result_or_exc
+        self.calls: list[dict] = []
+
+    def image_generate(self, model_id, prompt, *, n, width, height,
+                       num_inference_steps, guidance_scale, negative_prompt, seed):
+        self.calls.append({
+            "model_id": model_id, "prompt": prompt, "n": n,
+            "width": width, "height": height,
+            "num_inference_steps": num_inference_steps,
+            "guidance_scale": guidance_scale,
+            "negative_prompt": negative_prompt, "seed": seed,
+        })
+        if isinstance(self.result_or_exc, Exception):
+            raise self.result_or_exc
+        return self.result_or_exc
+
+
+def _client(result_or_exc) -> tuple[TestClient, _StubImageBackend]:
+    backend = _StubImageBackend(result_or_exc)
+    return TestClient(create_app(backend)), backend
 
 
 class IsDiffusionModelTest(unittest.TestCase):
@@ -209,6 +241,76 @@ class ParseSizeTest(unittest.TestCase):
     def test_non_integer_raises(self):
         with self.assertRaises(ValueError):
             server_mod._parse_size("axb")
+
+
+class ImagesGenerationRouteTest(unittest.TestCase):
+    def _post(self, client, **overrides):
+        body = {"model": MODEL, "prompt": "a cat"}
+        body.update(overrides)
+        return client.post("/v1/images/generations", json=body)
+
+    def test_b64_json_response_shape(self):
+        client, _ = _client(ImageResult(images=[_PNG]))
+        resp = self._post(client)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIsInstance(data["created"], int)
+        self.assertEqual(len(data["data"]), 1)
+        self.assertEqual(
+            data["data"][0]["b64_json"], base64.b64encode(_PNG).decode("ascii")
+        )
+
+    def test_url_format_returns_data_url(self):
+        client, _ = _client(ImageResult(images=[_PNG]))
+        resp = self._post(client, response_format="url")
+        entry = resp.json()["data"][0]
+        self.assertTrue(entry["url"].startswith("data:image/png;base64,"))
+        self.assertEqual(
+            entry["url"],
+            "data:image/png;base64," + base64.b64encode(_PNG).decode("ascii"),
+        )
+
+    def test_extension_fields_forwarded_with_parsed_size(self):
+        client, backend = _client(ImageResult(images=[_PNG]))
+        self._post(
+            client, n=2, size="512x768", num_inference_steps=8,
+            guidance_scale=0.0, negative_prompt="blurry", seed=7,
+        )
+        self.assertEqual(backend.calls, [{
+            "model_id": MODEL, "prompt": "a cat", "n": 2,
+            "width": 512, "height": 768,
+            "num_inference_steps": 8, "guidance_scale": 0.0,
+            "negative_prompt": "blurry", "seed": 7,
+        }])
+
+    def test_omitted_optionals_forwarded_as_none(self):
+        client, backend = _client(ImageResult(images=[_PNG]))
+        self._post(client)
+        self.assertEqual(backend.calls[0], {
+            "model_id": MODEL, "prompt": "a cat", "n": 1,
+            "width": None, "height": None,
+            "num_inference_steps": None, "guidance_scale": None,
+            "negative_prompt": None, "seed": None,
+        })
+
+    def test_bad_size_is_400_without_calling_backend(self):
+        client, backend = _client(ImageResult(images=[_PNG]))
+        resp = self._post(client, size="1024")
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["code"], "invalid_size")
+        self.assertEqual(backend.calls, [])
+
+    def test_unsupported_model_maps_to_400(self):
+        client, _ = _client(UnsupportedModel("not a diffusion model"))
+        resp = self._post(client)
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["code"], "unsupported_model")
+
+    def test_model_not_found_maps_to_404(self):
+        client, _ = _client(ModelNotFound("org/ghost", Path("/nowhere")))
+        resp = self._post(client, model="org/ghost")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["error"]["code"], "model_not_found")
 
 
 if __name__ == "__main__":
