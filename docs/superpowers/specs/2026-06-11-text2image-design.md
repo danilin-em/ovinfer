@@ -1,6 +1,16 @@
 # Text2ImagePipeline → POST /v1/images/generations — дизайн
 
-Дата: 2026-06-11. Статус: одобрен (дизайн-ревью по секциям пройдено).
+Дата: 2026-06-11. Статус: реализован и принят 2026-06-11.
+
+**Примечание о приёмке (2026-06-11).** Приёмка планировалась на
+`hsuwill000/Z-Image-Turbo-ov`, но `og.Text2ImagePipeline` 2026.2.0 не
+поддерживает её архитектуру (`_class_name: ZImagePipeline` — нужен
+`optimum-intel`/`OVZImagePipeline`, другой рантайн): `og` диспетчеризует только
+семейства SD/SDXL/SD3/Flux/LCM. End-to-end приёмка проведена на
+`OpenVINO/LCM_Dreamshaper_v7-int8-ov` (LCM, 4 шага, 512×512, CPU). Дисклеймер:
+`is_diffusion_model` (наличие `model_index.json`) — необходимое, но не
+достаточное условие; модель с поддерживаемой раскладкой, но неизвестной og
+архитектурой падает на build и сейчас отдаёт 500.
 
 Реализация `og.Text2ImagePipeline` в ovinfer: заглушка 501 на
 `POST /v1/images/generations` заменяется рабочим инференсом. Контракт эндпоинта —
