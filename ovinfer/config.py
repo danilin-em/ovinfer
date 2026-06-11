@@ -11,7 +11,7 @@ from pathlib import Path
 from .errors import ConfigError
 
 _ENV_PREFIX = "OVINFER_"
-PIPELINE_KINDS = ("llm", "vlm", "embedding", "rerank")
+PIPELINE_KINDS = ("llm", "vlm", "embedding", "rerank", "text2image")
 
 
 def _xdg_data_home() -> Path:

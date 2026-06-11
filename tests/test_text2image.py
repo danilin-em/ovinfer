@@ -12,6 +12,7 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 
+from ovinfer import config
 from ovinfer import registry
 from ovinfer import server as server_mod
 from ovinfer.errors import OvinferError, UnsupportedModel
@@ -63,6 +64,16 @@ class UnsupportedModelMappingTest(unittest.TestCase):
         self.assertEqual(body["error"]["type"], "invalid_request_error")
         self.assertEqual(body["error"]["code"], "unsupported_model")
         self.assertEqual(body["error"]["message"], "nope")
+
+
+class PipelineKindTest(unittest.TestCase):
+    def test_text2image_is_a_known_kind(self):
+        self.assertIn("text2image", config.PIPELINE_KINDS)
+
+    def test_preload_accepts_text2image(self):
+        self.assertEqual(
+            config.parse_preload("org/m:text2image"), [("org/m", "text2image")]
+        )
 
 
 if __name__ == "__main__":
