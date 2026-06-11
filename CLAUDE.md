@@ -15,7 +15,7 @@ OpenAI-клиент ходит по HTTP. Внутри пакет разделё
 разных проекта**; ovinfer про обвязку не знает. На этой машине любой запуск
 OpenVINO-кода — через `openvino-env <команда>` (см. глобальные правила пользователя).
 
-## Состояние (2026-06-11, обновлять при смене фазы)
+## Состояние (2026-06-12, обновлять при смене фазы)
 
 - **v0.1 реализован и принят 2026-06-07**: пакет `ovinfer/` (sync-ядро + транспорт),
   LLM chat со стримингом и embeddings работают на реальных моделях; приёмка по
@@ -40,6 +40,20 @@ OpenVINO-кода — через `openvino-env <команда>` (см. глоб
   несобираемая модель; чистые build-ошибки — follow-up для всех пайплайнов).
   Спека: `docs/superpowers/specs/2026-06-11-text2image-design.md`; план:
   `docs/superpowers/plans/2026-06-11-text2image.md`.
+- **Image2Image реализован и принят 2026-06-12**: `og.Image2ImagePipeline` на
+  `POST /v1/images/edits` (ветка без mask) — multipart-загрузка `image` +
+  `prompt` отдаёт PNG (`b64_json`/data-URL); диффузионные «ручки»
+  (`num_inference_steps`, `guidance_scale`, `negative_prompt`, `seed`) плюс
+  img2img-knob `strength` как опциональные Form-поля-расширения. Декод входа —
+  общий с VLM хелпер `_decode_image_tensor`, но **img2img требует 4D NHWC
+  `(1,H,W,3)`** (`batched=True`): у `og.Image2ImagePipeline` вход модели `[?,?,?,?]`
+  и голый 3D HWC отвергается (VLM-путь остаётся 3D). Непустой `mask` → 501
+  `InpaintingPipeline` (отдельная итерация); не-диффузионная модель → 400. Требует
+  `vae_encoder` (пиксели входа → латент), в отличие от Text2Image. Приёмка
+  end-to-end на `OpenVINO/LCM_Dreamshaper_v7-int8-ov` (4 шага, `strength=0.6`,
+  512×512, CPU): img2img→200/PNG, `url`→data-URL, mask→501, non-diffusion→400.
+  Спека: `docs/superpowers/specs/2026-06-11-image2image-design.md`; план:
+  `docs/superpowers/plans/2026-06-12-image2image.md`.
 - Спека v0.1 (одобрена и реализована): `docs/superpowers/specs/2026-06-07-ovinfer-v0.1-design.md`.
 - Спека контракта (маппинг 11 og.*-пайплайнов на эндпоинты, схемы, ошибки, SSE):
   `docs/superpowers/specs/2026-06-06-openai-server-design.md`.
