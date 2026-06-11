@@ -196,5 +196,155 @@ class ImageEditDispatchTest(unittest.TestCase):
         self.assertEqual(be.pipeline_requests, [])
 
 
+from fastapi.testclient import TestClient
+
+from ovinfer.server import create_app
+
+MODEL = "org/diffuser"
+_PNG = b"\x89PNG\r\n\x1a\n-fake-png-bytes"
+
+
+class _StubEditBackend:
+    """Duck-typed Backend for transport tests; records image_edit calls.
+
+    The signature mirrors the real Backend.image_edit: image/mask positional,
+    the diffusion knobs keyword-only.
+    """
+
+    def __init__(self, result_or_exc) -> None:
+        self.result_or_exc = result_or_exc
+        self.calls: list[dict] = []
+
+    def image_edit(self, model_id, prompt, image, mask, *, n, width, height,
+                   num_inference_steps, guidance_scale, negative_prompt,
+                   strength, seed):
+        self.calls.append({
+            "model_id": model_id, "prompt": prompt, "image": image, "mask": mask,
+            "n": n, "width": width, "height": height,
+            "num_inference_steps": num_inference_steps,
+            "guidance_scale": guidance_scale, "negative_prompt": negative_prompt,
+            "strength": strength, "seed": seed,
+        })
+        if isinstance(self.result_or_exc, Exception):
+            raise self.result_or_exc
+        return self.result_or_exc
+
+
+def _edit_client(result_or_exc) -> tuple[TestClient, _StubEditBackend]:
+    backend = _StubEditBackend(result_or_exc)
+    return TestClient(create_app(backend)), backend
+
+
+class ImagesEditsRouteTest(unittest.TestCase):
+    def _post(self, client, *, data=None, files=None):
+        form = {"model": MODEL, "prompt": "a cat"}
+        if data:
+            form.update(data)
+        upload = files if files is not None else {
+            "image": ("in.png", _png_bytes(), "image/png")
+        }
+        return client.post("/v1/images/edits", data=form, files=upload)
+
+    def test_b64_json_response_shape_and_image_forwarded(self):
+        client, backend = _edit_client(ImageResult(images=[_PNG]))
+        resp = self._post(client)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIsInstance(body["created"], int)
+        self.assertEqual(len(body["data"]), 1)
+        self.assertEqual(
+            body["data"][0]["b64_json"], base64.b64encode(_PNG).decode("ascii")
+        )
+        # Image bytes reach the backend; absent mask becomes None.
+        self.assertEqual(backend.calls[0]["image"], _png_bytes())
+        self.assertIsNone(backend.calls[0]["mask"])
+
+    def test_url_format_returns_data_url(self):
+        client, _ = _edit_client(ImageResult(images=[_PNG]))
+        resp = self._post(client, data={"response_format": "url"})
+        entry = resp.json()["data"][0]
+        self.assertEqual(
+            entry["url"],
+            "data:image/png;base64," + base64.b64encode(_PNG).decode("ascii"),
+        )
+
+    def test_extension_fields_forwarded_with_parsed_size(self):
+        client, backend = _edit_client(ImageResult(images=[_PNG]))
+        self._post(client, data={
+            "n": "2", "size": "512x768", "num_inference_steps": "8",
+            "guidance_scale": "0.0", "negative_prompt": "blurry",
+            "strength": "0.6", "seed": "7",
+        })
+        call = backend.calls[0]
+        self.assertEqual(call["n"], 2)
+        self.assertEqual((call["width"], call["height"]), (512, 768))
+        self.assertEqual(call["num_inference_steps"], 8)
+        self.assertEqual(call["guidance_scale"], 0.0)
+        self.assertEqual(call["negative_prompt"], "blurry")
+        self.assertEqual(call["strength"], 0.6)
+        self.assertEqual(call["seed"], 7)
+
+    def test_omitted_optionals_forwarded_as_none_and_defaults(self):
+        client, backend = _edit_client(ImageResult(images=[_PNG]))
+        self._post(client)
+        call = backend.calls[0]
+        self.assertEqual(call["n"], 1)
+        self.assertEqual(
+            (call["width"], call["height"], call["num_inference_steps"],
+             call["guidance_scale"], call["negative_prompt"],
+             call["strength"], call["seed"]),
+            (None, None, None, None, None, None, None),
+        )
+
+    def test_mask_upload_is_forwarded(self):
+        client, backend = _edit_client(ImageResult(images=[_PNG]))
+        self._post(client, files={
+            "image": ("in.png", _png_bytes(), "image/png"),
+            "mask": ("m.png", b"mask-bytes", "image/png"),
+        })
+        self.assertEqual(backend.calls[0]["mask"], b"mask-bytes")
+
+    def test_bad_size_is_400_without_calling_backend(self):
+        client, backend = _edit_client(ImageResult(images=[_PNG]))
+        resp = self._post(client, data={"size": "1024"})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["code"], "invalid_size")
+        self.assertEqual(backend.calls, [])
+
+    def test_non_empty_mask_returns_501(self):
+        client, _ = _edit_client(PipelineNotImplemented("InpaintingPipeline"))
+        resp = self._post(client, files={
+            "image": ("in.png", _png_bytes(), "image/png"),
+            "mask": ("m.png", b"mask-bytes", "image/png"),
+        })
+        self.assertEqual(resp.status_code, 501)
+        self.assertEqual(resp.json()["error"]["code"], "pipeline_not_implemented")
+
+    def test_invalid_image_returns_400(self):
+        # Upload-decoding failures (InvalidImage) surface as 400 at the route.
+        client, _ = _edit_client(InvalidImage("bad image"))
+        resp = self._post(client)
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["code"], "invalid_image")
+
+    def test_unsupported_model_maps_to_400(self):
+        client, _ = _edit_client(UnsupportedModel("not a diffusion model"))
+        resp = self._post(client)
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["code"], "unsupported_model")
+
+    def test_model_not_found_maps_to_404(self):
+        client, _ = _edit_client(ModelNotFound("org/ghost", Path("/nowhere")))
+        resp = self._post(client, data={"model": "org/ghost"})
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["error"]["code"], "model_not_found")
+
+    def test_n_less_than_one_is_422(self):
+        client, backend = _edit_client(ImageResult(images=[_PNG]))
+        resp = self._post(client, data={"n": "0"})
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(backend.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

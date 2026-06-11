@@ -12,7 +12,7 @@ Pipeline-to-endpoint mapping (see docs/superpowers/specs/2026-06-06-openai-serve
     TextEmbeddingPipeline      -> POST /v1/embeddings                (implemented)
     TextRerankPipeline         -> POST /v1/rerank                    (implemented)
     Text2ImagePipeline         -> POST /v1/images/generations        (implemented)
-    Image2ImagePipeline        -> POST /v1/images/edits              (501)
+    Image2ImagePipeline        -> POST /v1/images/edits              (implemented)
     InpaintingPipeline         -> POST /v1/images/edits (mask)       (501)
     WhisperPipeline            -> POST /v1/audio/transcriptions|translations (501)
     Text2SpeechPipeline        -> POST /v1/audio/speech              (501)
@@ -394,15 +394,48 @@ def create_app(backend: Backend) -> FastAPI:
         prompt: str = Form(...),
         image: UploadFile = File(...),
         mask: UploadFile | None = File(None),
-        n: int = Form(1),
+        n: int = Form(1, ge=1),
         size: str | None = Form(None),
-        response_format: str = Form("b64_json"),
+        response_format: Literal["url", "b64_json"] = Form("b64_json"),
+        # Diffusion knobs (not in OpenAI's edits schema): on multipart there is
+        # no extra="allow", so each is declared explicitly and forwarded when set.
+        num_inference_steps: int | None = Form(None),
+        guidance_scale: float | None = Form(None),
+        negative_prompt: str | None = Form(None),
+        strength: float | None = Form(None),
+        seed: int | None = Form(None),
     ) -> Any:
+        try:
+            width, height = _parse_size(size)
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=400,
+                content=_error_body(
+                    str(exc), "invalid_request_error", "invalid_size"
+                ),
+            )
         image_bytes = image.file.read()
         mask_bytes = mask.file.read() if mask is not None else None
-        return backend.image_edit(
-            model, prompt, image_bytes, mask_bytes, n, size, response_format
+        result = backend.image_edit(
+            model,
+            prompt,
+            image_bytes,
+            mask_bytes,
+            n=n,
+            width=width,
+            height=height,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            negative_prompt=negative_prompt,
+            strength=strength,
+            seed=seed,
         )
+        return {
+            "created": int(time.time()),
+            "data": [
+                _image_entry(png, response_format) for png in result.images
+            ],
+        }
 
     @app.post("/v1/audio/transcriptions")
     def audio_transcriptions(
