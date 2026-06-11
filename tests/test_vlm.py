@@ -15,13 +15,15 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
+from ovinfer import backend as backend_mod
 from ovinfer.backend import (
+    Backend,
     ChatResult,
     _extract_image_url,
     _fetch_image_bytes,
     _vlm_history,
 )
-from ovinfer.errors import InvalidImage
+from ovinfer.errors import InvalidImage, ModelNotFound
 from ovinfer.server import create_app
 
 
@@ -229,6 +231,162 @@ class LoadImageTensorTest(unittest.TestCase):
         garbage = "data:image/png;base64," + base64.b64encode(b"not an image").decode()
         with self.assertRaises(InvalidImage):
             _load_image_tensor(garbage)
+
+
+class _FakeMetrics:
+    def __init__(self, prompt_tokens: int, completion_tokens: int) -> None:
+        self._p, self._c = prompt_tokens, completion_tokens
+
+    def get_num_input_tokens(self) -> int:
+        return self._p
+
+    def get_num_generated_tokens(self) -> int:
+        return self._c
+
+
+class _FakeResult:
+    def __init__(self, text: str = "reply", prompt_tokens: int = 3,
+                 completion_tokens: int = 2) -> None:
+        self.texts = [text]
+        self.perf_metrics = _FakeMetrics(prompt_tokens, completion_tokens)
+
+
+class _FakeTokenizer:
+    def apply_chat_template(self, history, add_generation_prompt):
+        # Echo a deterministic rendering so tests can assert on it.
+        return "TPL:" + "|".join(f"{m['role']}={m['content']}" for m in history)
+
+
+class _FakeConfig:
+    def __init__(self) -> None:
+        self.max_new_tokens = 512
+        self.apply_chat_template = True
+
+
+class _FakeChatPipe:
+    """Stands in for both og.LLMPipeline and og.VLMPipeline."""
+
+    def __init__(self, deltas: list[str] | None = None) -> None:
+        self.generate_calls: list[dict] = []
+        self._deltas = deltas or []
+
+    def get_tokenizer(self):
+        return _FakeTokenizer()
+
+    def generate(self, prompt, *args, images=None, generation_config=None,
+                 streamer=None, **kwargs):
+        # LLM call:  generate([prompt], cfg[, on_token])  -> cfg in args[0]
+        # VLM call:  generate(prompt, images=..., generation_config=cfg, streamer=..)
+        cfg = generation_config if generation_config is not None else (
+            args[0] if args else None
+        )
+        on_token = streamer if streamer is not None else (
+            args[1] if len(args) > 1 else None
+        )
+        self.generate_calls.append(
+            {"prompt": prompt, "images": images, "cfg": cfg}
+        )
+        if on_token is not None:
+            for d in self._deltas:
+                on_token(d)
+        return _FakeResult()
+
+
+class _DispatchBackend(Backend):
+    """Real Backend with _pipeline and _generation_config stubbed."""
+
+    def __init__(self, models_root: Path, pipe: _FakeChatPipe) -> None:
+        super().__init__(models_root=models_root, default_device="CPU")
+        self._pipe = pipe
+        self.pipeline_requests: list[tuple[str, str]] = []
+
+    @contextmanager
+    def _pipeline(self, model_id, kind):
+        self.pipeline_requests.append((model_id, kind))
+        yield self._pipe
+
+    @staticmethod
+    def _generation_config(temperature, top_p, max_tokens):
+        return _FakeConfig()
+
+
+class DispatchTest(unittest.TestCase):
+    def test_text_only_to_llm_model_uses_llm_pipeline(self):
+        root, model = _llm_root()
+        pipe = _FakeChatPipe()
+        be = _DispatchBackend(root, pipe)
+        result = be.chat(model, [{"role": "user", "content": "hi"}])
+        self.assertIsInstance(result, ChatResult)
+        self.assertEqual(be.pipeline_requests, [(model, "llm")])
+        # LLM path passes a 1-element list and no images.
+        self.assertEqual(pipe.generate_calls[0]["prompt"], ["TPL:user=hi"])
+        self.assertIsNone(pipe.generate_calls[0]["images"])
+
+    def test_text_only_to_vlm_model_uses_vlm_pipeline(self):
+        root, model = _vlm_root()
+        pipe = _FakeChatPipe()
+        be = _DispatchBackend(root, pipe)
+        be.chat(model, [{"role": "user", "content": "hi"}])
+        self.assertEqual(be.pipeline_requests, [(model, "vlm")])
+        call = pipe.generate_calls[0]
+        self.assertEqual(call["prompt"], "TPL:user=hi")  # plain str, not a list
+        self.assertEqual(call["images"], [])             # empty, not None
+        self.assertFalse(call["cfg"].apply_chat_template)  # forced False for VLM
+
+    def test_image_to_llm_model_is_invalid_image_without_building_pipeline(self):
+        root, model = _llm_root()
+        be = _DispatchBackend(root, _FakeChatPipe())
+        msg = {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "http://x/a.png"}},
+                {"type": "text", "text": "?"},
+            ],
+        }
+        with self.assertRaises(InvalidImage):
+            be.chat(model, [msg])
+        self.assertEqual(be.pipeline_requests, [])
+
+    def test_image_to_vlm_model_loads_and_passes_tensors(self):
+        root, model = _vlm_root()
+        pipe = _FakeChatPipe()
+        be = _DispatchBackend(root, pipe)
+        msg = {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "u0"}},
+                {"type": "text", "text": "describe"},
+            ],
+        }
+        with mock.patch.object(backend_mod, "_load_image_tensor", return_value="T0"):
+            be.chat(model, [msg])
+        call = pipe.generate_calls[0]
+        self.assertEqual(call["images"], ["T0"])
+        self.assertEqual(call["prompt"], "TPL:user=<ov_genai_image_0>describe")
+
+    def test_unknown_model_404s_before_any_image_load(self):
+        root, _ = _vlm_root()
+        be = _DispatchBackend(root, _FakeChatPipe())
+        with self.assertRaises(ModelNotFound):
+            be.chat("org/ghost", [{"role": "user", "content": "hi"}])
+
+
+class StreamDispatchTest(unittest.TestCase):
+    def test_vlm_stream_uses_vlm_pipeline_and_yields_deltas(self):
+        root, model = _vlm_root()
+        pipe = _FakeChatPipe(deltas=["Hello", " world"])
+        be = _DispatchBackend(root, pipe)
+        gen = be.chat_stream(model, [{"role": "user", "content": "hi"}])
+        self.assertEqual(list(gen), ["Hello", " world"])
+        self.assertEqual(be.pipeline_requests, [(model, "vlm")])
+
+    def test_llm_stream_uses_llm_pipeline(self):
+        root, model = _llm_root()
+        pipe = _FakeChatPipe(deltas=["a", "b"])
+        be = _DispatchBackend(root, pipe)
+        gen = be.chat_stream(model, [{"role": "user", "content": "hi"}])
+        self.assertEqual(list(gen), ["a", "b"])
+        self.assertEqual(be.pipeline_requests, [(model, "llm")])
 
 
 if __name__ == "__main__":

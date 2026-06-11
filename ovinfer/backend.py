@@ -331,11 +331,59 @@ class Backend:
             completion_tokens=completion_tokens,
         )
 
-    def _check_chat_supported(self, messages: list[dict[str, Any]]) -> None:
-        if messages_have_images(messages):
-            raise PipelineNotImplemented("VLMPipeline")
+    def _check_chat_supported(self) -> None:
         if self.settings.use_continuous_batching:
             raise PipelineNotImplemented("ContinuousBatchingPipeline")
+
+    def _resolve_chat_route(
+        self, model_id: str, messages: list[dict[str, Any]]
+    ) -> tuple[str, tuple[list[dict[str, str]], list[Any]] | None]:
+        """Eager routing and validation shared by chat and chat_stream.
+
+        Returns (kind, prepared). kind is "vlm" or "llm". For "vlm", prepared is
+        (history, image_tensors) with images already loaded, so a bad image
+        raises InvalidImage here — before any streaming response starts. Raises
+        404 (unknown model), 400 (images to a non-VLM model or a bad image), or
+        501 (continuous batching) before the transport sends headers.
+        """
+        self._check_chat_supported()
+        model_dir = registry.resolve_model_dir(self.settings.models_root, model_id)
+        if registry.is_vlm_model(model_dir):
+            history, urls = _vlm_history(messages)
+            images = [_load_image_tensor(url) for url in urls]
+            return "vlm", (history, images)
+        if messages_have_images(messages):
+            raise InvalidImage(
+                f"model '{model_id}' has no vision encoder and cannot accept images"
+            )
+        return "llm", None
+
+    def _generate(
+        self,
+        pipe: Any,
+        kind: str,
+        messages: list[dict[str, Any]],
+        prepared: tuple[list[dict[str, str]], list[Any]] | None,
+        cfg: Any,
+        on_token: Any = None,
+    ) -> Any:
+        """Run one generation. VLM gets a single templated prompt string plus
+        image tensors with apply_chat_template disabled (we render the template
+        ourselves); LLM keeps the 1-element-list form. on_token, when given, is
+        the streaming callback."""
+        if kind == "vlm":
+            history, images = prepared
+            prompt = pipe.get_tokenizer().apply_chat_template(
+                history, add_generation_prompt=True
+            )
+            cfg.apply_chat_template = False
+            return pipe.generate(
+                prompt, images=images, generation_config=cfg, streamer=on_token
+            )
+        prompt = self._render_prompt(pipe, messages)
+        if on_token is None:
+            return pipe.generate([prompt], cfg)
+        return pipe.generate([prompt], cfg, on_token)
 
     def chat(
         self,
@@ -346,14 +394,11 @@ class Backend:
         top_p: float | None = None,
         max_tokens: int | None = None,
     ) -> ChatResult:
-        """Blocking non-streaming chat completion."""
-        self._check_chat_supported(messages)
+        """Blocking non-streaming chat completion (LLM or VLM)."""
+        kind, prepared = self._resolve_chat_route(model_id, messages)
         cfg = self._generation_config(temperature, top_p, max_tokens)
-        with self._pipeline(model_id, "llm") as pipe:
-            prompt = self._render_prompt(pipe, messages)
-            # og returns a plain str for str input; a 1-element list yields
-            # DecodedResults with texts and perf_metrics.
-            result = pipe.generate([prompt], cfg)
+        with self._pipeline(model_id, kind) as pipe:
+            result = self._generate(pipe, kind, messages, prepared, cfg)
         return self._chat_result(result, cfg)
 
     def chat_stream(
@@ -365,19 +410,23 @@ class Backend:
         top_p: float | None = None,
         max_tokens: int | None = None,
     ) -> Iterator[str]:
-        """Streaming chat: yields str deltas, returns the finish_reason.
+        """Streaming chat (LLM or VLM): yields str deltas, returns finish_reason.
 
-        The finish_reason comes back as the generator's return value
-        (PEP 380, StopIteration.value). Domain errors (404/501) are raised
-        eagerly here, before the transport sends response headers.
+        Routing/validation (404/400/501) and image loading happen eagerly here,
+        before the transport sends response headers. The finish_reason comes
+        back as the generator's return value (PEP 380, StopIteration.value).
         """
-        self._check_chat_supported(messages)
-        registry.resolve_model_dir(self.settings.models_root, model_id)
+        kind, prepared = self._resolve_chat_route(model_id, messages)
         cfg = self._generation_config(temperature, top_p, max_tokens)
-        return self._chat_stream_gen(model_id, messages, cfg)
+        return self._chat_stream_gen(model_id, messages, cfg, kind, prepared)
 
     def _chat_stream_gen(
-        self, model_id: str, messages: list[dict[str, Any]], cfg: Any
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        cfg: Any,
+        kind: str,
+        prepared: tuple[list[dict[str, str]], list[Any]] | None,
     ) -> Iterator[str]:
         import openvino_genai as og
 
@@ -393,11 +442,10 @@ class Backend:
 
         def worker() -> None:
             try:
-                with self._pipeline(model_id, "llm") as pipe:
-                    prompt = self._render_prompt(pipe, messages)
-                    # og returns a plain str for str input; a 1-element list yields
-                    # DecodedResults with texts and perf_metrics.
-                    result = pipe.generate([prompt], cfg, on_token)
+                with self._pipeline(model_id, kind) as pipe:
+                    result = self._generate(
+                        pipe, kind, messages, prepared, cfg, on_token
+                    )
                     outcome["result"] = self._chat_result(result, cfg)
             except BaseException as exc:  # propagated to the consuming thread
                 outcome["error"] = exc
