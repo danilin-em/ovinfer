@@ -15,13 +15,19 @@ OpenAI-клиент ходит по HTTP. Внутри пакет разделё
 разных проекта**; ovinfer про обвязку не знает. На этой машине любой запуск
 OpenVINO-кода — через `openvino-env <команда>` (см. глобальные правила пользователя).
 
-## Состояние (2026-06-07, обновлять при смене фазы)
+## Состояние (2026-06-11, обновлять при смене фазы)
 
 - **v0.1 реализован и принят 2026-06-07**: пакет `ovinfer/` (sync-ядро + транспорт),
   LLM chat со стримингом и embeddings работают на реальных моделях; приёмка по
   чек-листу спеки пройдена. План: `docs/superpowers/plans/2026-06-07-ovinfer-v0.1.md`.
 - **Rerank реализован 2026-06-10**: `POST /v1/rerank` через og.TextRerankPipeline
   (Jina-формат ответа); спека: `docs/superpowers/specs/2026-06-10-rerank-design.md`.
+- **VLM реализован 2026-06-11**: `og.VLMPipeline` на `POST /v1/chat/completions`
+  — модель-VLM (есть `openvino_vision_embeddings_model.xml`) обслуживает и
+  text-only, и image-запросы; диспетчеризация по файлам модели; изображения из
+  data:/http(s) URL (приёмка на `gemma-3-4b-it-int4-cw-ov`). Спека:
+  `docs/superpowers/specs/2026-06-10-vlm-design.md`; план:
+  `docs/superpowers/plans/2026-06-11-vlm.md`.
 - Спека v0.1 (одобрена и реализована): `docs/superpowers/specs/2026-06-07-ovinfer-v0.1-design.md`.
 - Спека контракта (маппинг 11 og.*-пайплайнов на эндпоинты, схемы, ошибки, SSE):
   `docs/superpowers/specs/2026-06-06-openai-server-design.md`.

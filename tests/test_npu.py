@@ -77,6 +77,11 @@ class RejectReasonTest(unittest.TestCase):
     def test_uncompressed_llm_is_not_flagged(self):
         self.assertIsNone(npu.reject_reason(_model_dir(None), "llm"))
 
+    def test_vlm_on_npu_is_not_flagged(self):
+        # VLM on NPU is unverified on this stack (og puts only the language
+        # model on NPU); the conservative preflight stays silent.
+        self.assertIsNone(npu.reject_reason(_model_dir(_CHANNELWISE), "vlm"))
+
 
 class WarnIfIncompatibleTest(unittest.TestCase):
     """warn_if_incompatible logs a single WARNING on the 'ovinfer' logger for an

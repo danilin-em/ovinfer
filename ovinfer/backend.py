@@ -7,6 +7,8 @@ imported lazily inside methods: importing ovinfer.backend stays cheap and
 works without a configured OpenVINO environment.
 """
 
+import base64
+import binascii
 import queue
 import threading
 from collections import OrderedDict
@@ -16,7 +18,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from . import config, npu, registry
-from .errors import PipelineNotImplemented
+from .errors import InvalidImage, PipelineNotImplemented
 
 _IMAGE_PART_TYPES = {"image_url", "input_image"}
 _QUEUE_END = object()
@@ -72,6 +74,98 @@ def _flatten_content(content: str | list[dict[str, Any]] | None) -> str:
     return "".join(
         part.get("text", "") for part in content if part.get("type") == "text"
     )
+
+
+_IMAGE_FETCH_TIMEOUT = 30.0
+
+
+def _extract_image_url(part: dict[str, Any]) -> str:
+    """Pull the URL out of an image content part (dict or bare-string form)."""
+    raw = part.get("image_url")
+    url = raw.get("url") if isinstance(raw, dict) else raw
+    if not isinstance(url, str) or not url:
+        raise InvalidImage("image content part is missing an image_url")
+    return url
+
+
+def _vlm_history(
+    messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Render messages for a VLM prompt.
+
+    Text parts are kept; each image part becomes an <ov_genai_image_N> tag,
+    N being a running zero-based index over the whole conversation in part
+    order. Returns the chat-template-ready history plus the image URLs in tag
+    order (one entry per tag). og substitutes the tags with image tokens at
+    generate() time.
+    """
+    history: list[dict[str, str]] = []
+    urls: list[str] = []
+    for msg in messages:
+        content = msg.get("content")
+        if content is None or isinstance(content, str):
+            history.append({"role": msg["role"], "content": content or ""})
+            continue
+        rendered: list[str] = []
+        for part in content:
+            ptype = part.get("type")
+            if ptype == "text":
+                rendered.append(part.get("text", ""))
+            elif ptype in _IMAGE_PART_TYPES:
+                rendered.append(f"<ov_genai_image_{len(urls)}>")
+                urls.append(_extract_image_url(part))
+        history.append({"role": msg["role"], "content": "".join(rendered)})
+    return history, urls
+
+
+def _fetch_image_bytes(url: str) -> bytes:
+    """Return raw image bytes for a data: or http(s) URL; raise InvalidImage."""
+    if url.startswith("data:"):
+        header, sep, payload = url.partition(",")
+        if not sep:
+            raise InvalidImage("malformed data: URL (missing comma)")
+        if ";base64" in header:
+            try:
+                return base64.b64decode(payload, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise InvalidImage(f"invalid base64 in data: URL: {exc}") from exc
+        import urllib.parse
+
+        return urllib.parse.unquote_to_bytes(payload)
+    if url.startswith(("http://", "https://")):
+        import urllib.error
+        import urllib.request
+
+        # No SSRF egress filtering: this fetch will follow a client-supplied URL
+        # to any host, including loopback/private/link-local addresses (e.g. cloud
+        # metadata). Deliberate for this local-first, no-auth server, where
+        # fetching images from localhost/LAN is a legitimate use case; revisit if
+        # the server is ever exposed beyond a trusted host. See the spec's
+        # "Безопасность" note.
+        try:
+            with urllib.request.urlopen(url, timeout=_IMAGE_FETCH_TIMEOUT) as resp:
+                return resp.read()
+        except (urllib.error.URLError, OSError) as exc:
+            raise InvalidImage(f"could not fetch image URL: {exc}") from exc
+    raise InvalidImage(f"unsupported image URL scheme: {url[:32]!r}")
+
+
+def _load_image_tensor(url: str) -> Any:
+    """Fetch and decode an image URL into an ov.Tensor (uint8 RGB, HWC)."""
+    import io
+
+    import numpy as np
+    import openvino as ov
+    from PIL import Image, UnidentifiedImageError
+
+    raw = _fetch_image_bytes(url)
+    try:
+        pic = Image.open(io.BytesIO(raw))
+        pic.load()  # force decode now: truncated/broken data raises OSError here
+        pic = pic.convert("RGB")
+    except (UnidentifiedImageError, OSError) as exc:
+        raise InvalidImage(f"could not decode image: {exc}") from exc
+    return ov.Tensor(np.array(pic))
 
 
 class _CacheEntry:
@@ -179,6 +273,8 @@ class Backend:
         npu.warn_if_incompatible(model_id, model_dir, kind, device)
         if kind == "llm":
             return og.LLMPipeline(model_dir, device)
+        if kind == "vlm":
+            return og.VLMPipeline(model_dir, device)
         if kind == "embedding":
             return og.TextEmbeddingPipeline(model_dir, device)
         if kind == "rerank":
@@ -235,11 +331,66 @@ class Backend:
             completion_tokens=completion_tokens,
         )
 
-    def _check_chat_supported(self, messages: list[dict[str, Any]]) -> None:
-        if messages_have_images(messages):
-            raise PipelineNotImplemented("VLMPipeline")
+    def _check_chat_supported(self) -> None:
         if self.settings.use_continuous_batching:
             raise PipelineNotImplemented("ContinuousBatchingPipeline")
+
+    def _resolve_chat_route(
+        self, model_id: str, messages: list[dict[str, Any]]
+    ) -> tuple[str, tuple[list[dict[str, str]], list[Any]] | None]:
+        """Eager routing and validation shared by chat and chat_stream.
+
+        Returns (kind, prepared). kind is "vlm" or "llm". For "vlm", prepared is
+        (history, image_tensors) with images already loaded, so a bad image
+        raises InvalidImage here — before any streaming response starts. Raises
+        404 (unknown model), 400 (images to a non-VLM model or a bad image), or
+        501 (continuous batching) before the transport sends headers.
+        """
+        self._check_chat_supported()
+        model_dir = registry.resolve_model_dir(self.settings.models_root, model_id)
+        if registry.is_vlm_model(model_dir):
+            history, urls = _vlm_history(messages)
+            images = [_load_image_tensor(url) for url in urls]
+            return "vlm", (history, images)
+        if messages_have_images(messages):
+            raise InvalidImage(
+                f"model '{model_id}' has no vision encoder and cannot accept images"
+            )
+        return "llm", None
+
+    def _generate(
+        self,
+        pipe: Any,
+        kind: str,
+        messages: list[dict[str, Any]],
+        prepared: tuple[list[dict[str, str]], list[Any]] | None,
+        cfg: Any,
+        on_token: Any = None,
+    ) -> Any:
+        """Run one generation. VLM gets a single templated prompt string plus
+        image tensors with apply_chat_template disabled (we render the template
+        ourselves); LLM keeps the 1-element-list form. on_token, when given, is
+        the streaming callback. `messages` is used only by the LLM path
+        (_render_prompt); the VLM path renders from `prepared`.
+
+        Both paths omit the streamer argument entirely when not streaming,
+        rather than passing None, so the call shape matches og's own samples.
+        """
+        if kind == "vlm":
+            history, images = prepared
+            prompt = pipe.get_tokenizer().apply_chat_template(
+                history, add_generation_prompt=True
+            )
+            cfg.apply_chat_template = False
+            if on_token is None:
+                return pipe.generate(prompt, images=images, generation_config=cfg)
+            return pipe.generate(
+                prompt, images=images, generation_config=cfg, streamer=on_token
+            )
+        prompt = self._render_prompt(pipe, messages)
+        if on_token is None:
+            return pipe.generate([prompt], cfg)
+        return pipe.generate([prompt], cfg, on_token)
 
     def chat(
         self,
@@ -250,14 +401,11 @@ class Backend:
         top_p: float | None = None,
         max_tokens: int | None = None,
     ) -> ChatResult:
-        """Blocking non-streaming chat completion."""
-        self._check_chat_supported(messages)
+        """Blocking non-streaming chat completion (LLM or VLM)."""
+        kind, prepared = self._resolve_chat_route(model_id, messages)
         cfg = self._generation_config(temperature, top_p, max_tokens)
-        with self._pipeline(model_id, "llm") as pipe:
-            prompt = self._render_prompt(pipe, messages)
-            # og returns a plain str for str input; a 1-element list yields
-            # DecodedResults with texts and perf_metrics.
-            result = pipe.generate([prompt], cfg)
+        with self._pipeline(model_id, kind) as pipe:
+            result = self._generate(pipe, kind, messages, prepared, cfg)
         return self._chat_result(result, cfg)
 
     def chat_stream(
@@ -269,19 +417,23 @@ class Backend:
         top_p: float | None = None,
         max_tokens: int | None = None,
     ) -> Iterator[str]:
-        """Streaming chat: yields str deltas, returns the finish_reason.
+        """Streaming chat (LLM or VLM): yields str deltas, returns finish_reason.
 
-        The finish_reason comes back as the generator's return value
-        (PEP 380, StopIteration.value). Domain errors (404/501) are raised
-        eagerly here, before the transport sends response headers.
+        Routing/validation (404/400/501) and image loading happen eagerly here,
+        before the transport sends response headers. The finish_reason comes
+        back as the generator's return value (PEP 380, StopIteration.value).
         """
-        self._check_chat_supported(messages)
-        registry.resolve_model_dir(self.settings.models_root, model_id)
+        kind, prepared = self._resolve_chat_route(model_id, messages)
         cfg = self._generation_config(temperature, top_p, max_tokens)
-        return self._chat_stream_gen(model_id, messages, cfg)
+        return self._chat_stream_gen(model_id, messages, cfg, kind, prepared)
 
     def _chat_stream_gen(
-        self, model_id: str, messages: list[dict[str, Any]], cfg: Any
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        cfg: Any,
+        kind: str,
+        prepared: tuple[list[dict[str, str]], list[Any]] | None,
     ) -> Iterator[str]:
         import openvino_genai as og
 
@@ -297,11 +449,10 @@ class Backend:
 
         def worker() -> None:
             try:
-                with self._pipeline(model_id, "llm") as pipe:
-                    prompt = self._render_prompt(pipe, messages)
-                    # og returns a plain str for str input; a 1-element list yields
-                    # DecodedResults with texts and perf_metrics.
-                    result = pipe.generate([prompt], cfg, on_token)
+                with self._pipeline(model_id, kind) as pipe:
+                    result = self._generate(
+                        pipe, kind, messages, prepared, cfg, on_token
+                    )
                     outcome["result"] = self._chat_result(result, cfg)
             except BaseException as exc:  # propagated to the consuming thread
                 outcome["error"] = exc
