@@ -155,15 +155,19 @@ def _fetch_image_bytes(url: str) -> bytes:
     raise InvalidImage(f"unsupported image URL scheme: {url[:32]!r}")
 
 
-def _load_image_tensor(url: str) -> Any:
-    """Fetch and decode an image URL into an ov.Tensor (uint8 RGB, HWC)."""
+def _decode_image_tensor(raw: bytes) -> Any:
+    """Decode raw image bytes into an ov.Tensor (uint8 RGB, HWC).
+
+    pic.load() forces a full decode now so truncated/broken data raises here,
+    not lazily downstream. Shared by the VLM path (via _load_image_tensor, after
+    a URL fetch) and the image-edit path (raw multipart upload bytes).
+    """
     import io
 
     import numpy as np
     import openvino as ov
     from PIL import Image, UnidentifiedImageError
 
-    raw = _fetch_image_bytes(url)
     try:
         pic = Image.open(io.BytesIO(raw))
         pic.load()  # force decode now: truncated/broken data raises OSError here
@@ -171,6 +175,11 @@ def _load_image_tensor(url: str) -> Any:
     except (UnidentifiedImageError, OSError) as exc:
         raise InvalidImage(f"could not decode image: {exc}") from exc
     return ov.Tensor(np.array(pic))
+
+
+def _load_image_tensor(url: str) -> Any:
+    """Fetch and decode an image URL into an ov.Tensor (uint8 RGB, HWC)."""
+    return _decode_image_tensor(_fetch_image_bytes(url))
 
 
 def _encode_pngs(tensor: Any) -> list[bytes]:

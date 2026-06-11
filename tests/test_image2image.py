@@ -59,5 +59,26 @@ class PipelineKindTest(unittest.TestCase):
         )
 
 
+from ovinfer.backend import _decode_image_tensor, _load_image_tensor
+from ovinfer.errors import InvalidImage
+
+
+class DecodeImageTensorTest(unittest.TestCase):
+    def test_valid_png_bytes_become_rgb_tensor(self):
+        tensor = _decode_image_tensor(_png_bytes(size=(3, 2)))
+        # PIL image is (W=3, H=2); tensor is (H, W, C) = (2, 3, 3).
+        self.assertEqual(list(tensor.shape), [2, 3, 3])
+
+    def test_undecodable_bytes_raise_invalid_image(self):
+        with self.assertRaises(InvalidImage):
+            _decode_image_tensor(b"not an image")
+
+    def test_load_image_tensor_still_decodes_a_data_url(self):
+        # Regression: the VLM entry point must keep working after the refactor.
+        url = "data:image/png;base64," + base64.b64encode(_png_bytes(size=(3, 2))).decode()
+        tensor = _load_image_tensor(url)
+        self.assertEqual(list(tensor.shape), [2, 3, 3])
+
+
 if __name__ == "__main__":
     unittest.main()
