@@ -52,3 +52,17 @@ def is_vlm_model(model_dir: Path) -> bool:
     Returns False (not an error) for a nonexistent path.
     """
     return (model_dir / "openvino_vision_embeddings_model.xml").is_file()
+
+
+def is_diffusion_model(model_dir: Path) -> bool:
+    """True if the model dir holds a diffusers pipeline export.
+
+    Diffusion exports (Text2Image/Image2Image/Inpainting) ship a
+    model_index.json at the model root listing the sub-models (transformer/unet,
+    vae, text_encoder, scheduler). Plain LLM and VLM exports do not. Image
+    generation requests (POST /v1/images/generations) require this marker;
+    a model without it is rejected with 400 rather than failing pipeline load.
+
+    Returns False (not an error) for a nonexistent path.
+    """
+    return (model_dir / "model_index.json").is_file()
