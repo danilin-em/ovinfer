@@ -161,6 +161,10 @@ class FetchImageBytesTest(unittest.TestCase):
         with self.assertRaises(InvalidImage):
             _fetch_image_bytes("data:image/png;base64,!!!notbase64!!!")
 
+    def test_percent_encoded_data_url(self):
+        # A data: URL without ;base64 carries percent-encoded bytes.
+        self.assertEqual(_fetch_image_bytes("data:text/plain,hi%21"), b"hi!")
+
     def test_unsupported_scheme_raises(self):
         with self.assertRaises(InvalidImage):
             _fetch_image_bytes("ftp://host/img.png")
