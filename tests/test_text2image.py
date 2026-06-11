@@ -13,6 +13,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from ovinfer import registry
+from ovinfer import server as server_mod
+from ovinfer.errors import OvinferError, UnsupportedModel
 
 
 def _diffusion_root(model: str = "org/diffuser") -> tuple[Path, str]:
@@ -49,6 +51,18 @@ class IsDiffusionModelTest(unittest.TestCase):
 
     def test_nonexistent_path_is_false(self):
         self.assertFalse(registry.is_diffusion_model(Path("/no/such/dir")))
+
+
+class UnsupportedModelMappingTest(unittest.TestCase):
+    def test_is_ovinfer_error(self):
+        self.assertIsInstance(UnsupportedModel("x"), OvinferError)
+
+    def test_maps_to_400_unsupported_model(self):
+        status, body = server_mod._map_error(UnsupportedModel("nope"))
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"]["type"], "invalid_request_error")
+        self.assertEqual(body["error"]["code"], "unsupported_model")
+        self.assertEqual(body["error"]["message"], "nope")
 
 
 if __name__ == "__main__":

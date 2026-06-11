@@ -32,13 +32,20 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
 from .backend import Backend, ChatResult
-from .errors import InvalidImage, ModelNotFound, OvinferError, PipelineNotImplemented
+from .errors import (
+    InvalidImage,
+    ModelNotFound,
+    OvinferError,
+    PipelineNotImplemented,
+    UnsupportedModel,
+)
 
 # --- error mapping (the OpenAI error format is a transport detail) -----------
 
 _ERROR_MAP: dict[type, tuple[int, str, str]] = {
     ModelNotFound: (404, "invalid_request_error", "model_not_found"),
     InvalidImage: (400, "invalid_request_error", "invalid_image"),
+    UnsupportedModel: (400, "invalid_request_error", "unsupported_model"),
     PipelineNotImplemented: (501, "not_implemented", "pipeline_not_implemented"),
 }
 _DEFAULT_ERROR = (500, "internal_error", "internal_error")

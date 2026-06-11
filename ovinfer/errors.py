@@ -26,5 +26,10 @@ class InvalidImage(OvinferError):
     failure) or was sent to a model that has no vision encoder."""
 
 
+class UnsupportedModel(OvinferError):
+    """The model cannot serve this endpoint's pipeline — e.g. a non-diffusion
+    model sent to image generation (POST /v1/images/generations)."""
+
+
 class ConfigError(OvinferError):
     """Invalid configuration (bad device-map syntax, preload over capacity, ...)."""
