@@ -170,6 +170,39 @@ class FetchImageBytesTest(unittest.TestCase):
             _fetch_image_bytes("ftp://host/img.png")
 
 
+def _llm_root(model: str = "org/llm") -> tuple[Path, str]:
+    """Temp models_root holding a plain-LLM export (no vision IR)."""
+    root = Path(tempfile.mkdtemp())
+    d = root / model
+    d.mkdir(parents=True)
+    (d / "openvino_model.xml").write_text("<net/>")
+    return root, model
+
+
+def _vlm_root(model: str = "org/vlm") -> tuple[Path, str]:
+    """Temp models_root holding a VLM export (has a vision-encoder IR)."""
+    root = Path(tempfile.mkdtemp())
+    d = root / model
+    d.mkdir(parents=True)
+    (d / "openvino_language_model.xml").write_text("<net/>")
+    (d / "openvino_vision_embeddings_model.xml").write_text("<net/>")
+    return root, model
+
+
+class IsVlmModelTest(unittest.TestCase):
+    def test_vlm_export_is_detected(self):
+        from ovinfer import registry
+
+        root, model = _vlm_root()
+        self.assertTrue(registry.is_vlm_model(root / model))
+
+    def test_plain_llm_export_is_not_vlm(self):
+        from ovinfer import registry
+
+        root, model = _llm_root()
+        self.assertFalse(registry.is_vlm_model(root / model))
+
+
 def _png_data_url(color=(255, 0, 0), size=(2, 2)) -> str:
     from PIL import Image
 

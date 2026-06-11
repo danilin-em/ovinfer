@@ -39,3 +39,14 @@ def model_created(models_root: Path, model_id: str) -> int:
         return int((models_root / model_id).stat().st_mtime)
     except OSError:
         return 0
+
+
+def is_vlm_model(model_dir: Path) -> bool:
+    """True if the model dir holds a VLM export (a vision-encoder IR).
+
+    VLM exports ship openvino_vision_embeddings_model.xml alongside the
+    language model; plain LLM exports do not. Chat requests for VLM models go
+    to og.VLMPipeline (which also serves text-only prompts) rather than
+    og.LLMPipeline, whose openvino_model.xml a VLM export lacks.
+    """
+    return (model_dir / "openvino_vision_embeddings_model.xml").is_file()

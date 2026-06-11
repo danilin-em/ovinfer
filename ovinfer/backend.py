@@ -273,6 +273,8 @@ class Backend:
         npu.warn_if_incompatible(model_id, model_dir, kind, device)
         if kind == "llm":
             return og.LLMPipeline(model_dir, device)
+        if kind == "vlm":
+            return og.VLMPipeline(model_dir, device)
         if kind == "embedding":
             return og.TextEmbeddingPipeline(model_dir, device)
         if kind == "rerank":
