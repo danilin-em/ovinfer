@@ -150,6 +150,22 @@ def _fetch_image_bytes(url: str) -> bytes:
     raise InvalidImage(f"unsupported image URL scheme: {url[:32]!r}")
 
 
+def _load_image_tensor(url: str) -> Any:
+    """Fetch and decode an image URL into an ov.Tensor (uint8 RGB, HWC)."""
+    import io
+
+    import numpy as np
+    import openvino as ov
+    from PIL import Image, UnidentifiedImageError
+
+    raw = _fetch_image_bytes(url)
+    try:
+        pic = Image.open(io.BytesIO(raw)).convert("RGB")
+    except (UnidentifiedImageError, OSError) as exc:
+        raise InvalidImage(f"could not decode image: {exc}") from exc
+    return ov.Tensor(np.array(pic))
+
+
 class _CacheEntry:
     __slots__ = ("pipeline", "lock")
 

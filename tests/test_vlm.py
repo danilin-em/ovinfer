@@ -170,5 +170,29 @@ class FetchImageBytesTest(unittest.TestCase):
             _fetch_image_bytes("ftp://host/img.png")
 
 
+def _png_data_url(color=(255, 0, 0), size=(2, 2)) -> str:
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+class LoadImageTensorTest(unittest.TestCase):
+    def test_valid_png_data_url_becomes_rgb_tensor(self):
+        from ovinfer.backend import _load_image_tensor
+
+        tensor = _load_image_tensor(_png_data_url(size=(3, 2)))
+        # PIL image is (W=3, H=2); numpy array is (H, W, C) = (2, 3, 3).
+        self.assertEqual(list(tensor.shape), [2, 3, 3])
+
+    def test_undecodable_bytes_raise_invalid_image(self):
+        from ovinfer.backend import _load_image_tensor
+
+        garbage = "data:image/png;base64," + base64.b64encode(b"not an image").decode()
+        with self.assertRaises(InvalidImage):
+            _load_image_tensor(garbage)
+
+
 if __name__ == "__main__":
     unittest.main()
