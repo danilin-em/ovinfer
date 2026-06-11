@@ -200,6 +200,15 @@ class ImageEditDispatchTest(unittest.TestCase):
             be.image_edit("org/ghost", "x", _png_bytes(), b"mask")
         self.assertEqual(be.pipeline_requests, [])
 
+    def test_mask_beats_non_diffusion_model(self):
+        # A non-empty mask is always Inpainting (501): the mask check precedes
+        # the diffusion check, so a mask on a non-diffusion model is 501, not 400.
+        root, model = _llm_root()
+        be = _DispatchBackend(root, _FakeI2IPipe())
+        with self.assertRaises(PipelineNotImplemented):
+            be.image_edit(model, "x", _png_bytes(), b"mask")
+        self.assertEqual(be.pipeline_requests, [])
+
 
 from fastapi.testclient import TestClient
 
