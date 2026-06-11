@@ -7,6 +7,8 @@ imported lazily inside methods: importing ovinfer.backend stays cheap and
 works without a configured OpenVINO environment.
 """
 
+import base64
+import binascii
 import queue
 import threading
 from collections import OrderedDict
@@ -16,7 +18,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from . import config, npu, registry
-from .errors import PipelineNotImplemented
+from .errors import InvalidImage, PipelineNotImplemented
 
 _IMAGE_PART_TYPES = {"image_url", "input_image"}
 _QUEUE_END = object()
@@ -72,6 +74,74 @@ def _flatten_content(content: str | list[dict[str, Any]] | None) -> str:
     return "".join(
         part.get("text", "") for part in content if part.get("type") == "text"
     )
+
+
+_IMAGE_FETCH_TIMEOUT = 30.0
+
+
+def _extract_image_url(part: dict[str, Any]) -> str:
+    """Pull the URL out of an image content part (dict or bare-string form)."""
+    raw = part.get("image_url")
+    url = raw.get("url") if isinstance(raw, dict) else raw
+    if not isinstance(url, str) or not url:
+        raise InvalidImage("image content part is missing an image_url")
+    return url
+
+
+def _vlm_history(
+    messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Render messages for a VLM prompt.
+
+    Text parts are kept; each image part becomes an <ov_genai_image_N> tag,
+    N being a running zero-based index over the whole conversation in part
+    order. Returns the chat-template-ready history plus the image URLs in tag
+    order (one entry per tag). og substitutes the tags with image tokens at
+    generate() time.
+    """
+    history: list[dict[str, str]] = []
+    urls: list[str] = []
+    for msg in messages:
+        content = msg.get("content")
+        if content is None or isinstance(content, str):
+            history.append({"role": msg["role"], "content": content or ""})
+            continue
+        rendered: list[str] = []
+        for part in content:
+            ptype = part.get("type")
+            if ptype == "text":
+                rendered.append(part.get("text", ""))
+            elif ptype in _IMAGE_PART_TYPES:
+                rendered.append(f"<ov_genai_image_{len(urls)}>")
+                urls.append(_extract_image_url(part))
+        history.append({"role": msg["role"], "content": "".join(rendered)})
+    return history, urls
+
+
+def _fetch_image_bytes(url: str) -> bytes:
+    """Return raw image bytes for a data: or http(s) URL; raise InvalidImage."""
+    if url.startswith("data:"):
+        header, sep, payload = url.partition(",")
+        if not sep:
+            raise InvalidImage("malformed data: URL (missing comma)")
+        if ";base64" in header:
+            try:
+                return base64.b64decode(payload, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise InvalidImage(f"invalid base64 in data: URL: {exc}") from exc
+        import urllib.parse
+
+        return urllib.parse.unquote_to_bytes(payload)
+    if url.startswith(("http://", "https://")):
+        import urllib.error
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(url, timeout=_IMAGE_FETCH_TIMEOUT) as resp:
+                return resp.read()
+        except (urllib.error.URLError, OSError) as exc:
+            raise InvalidImage(f"could not fetch image URL: {exc}") from exc
+    raise InvalidImage(f"unsupported image URL scheme: {url[:32]!r}")
 
 
 class _CacheEntry:

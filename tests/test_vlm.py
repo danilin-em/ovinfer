@@ -15,7 +15,12 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from ovinfer.backend import ChatResult
+from ovinfer.backend import (
+    ChatResult,
+    _extract_image_url,
+    _fetch_image_bytes,
+    _vlm_history,
+)
 from ovinfer.errors import InvalidImage
 from ovinfer.server import create_app
 
@@ -73,6 +78,92 @@ class TransportInvalidImageTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["error"]["code"], "invalid_image")
+
+
+class VlmHistoryTest(unittest.TestCase):
+    def test_plain_string_content_passes_through(self):
+        history, urls = _vlm_history([{"role": "user", "content": "hi"}])
+        self.assertEqual(history, [{"role": "user", "content": "hi"}])
+        self.assertEqual(urls, [])
+
+    def test_none_content_renders_empty_string(self):
+        history, urls = _vlm_history([{"role": "assistant", "content": None}])
+        self.assertEqual(history, [{"role": "assistant", "content": ""}])
+        self.assertEqual(urls, [])
+
+    def test_text_kept_image_becomes_tag_in_part_order(self):
+        msg = {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "http://x/a.png"}},
+                {"type": "text", "text": "what is this?"},
+            ],
+        }
+        history, urls = _vlm_history([msg])
+        self.assertEqual(
+            history, [{"role": "user", "content": "<ov_genai_image_0>what is this?"}]
+        )
+        self.assertEqual(urls, ["http://x/a.png"])
+
+    def test_running_index_across_messages(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "u0"}},
+                    {"type": "text", "text": "first"},
+                ],
+            },
+            {"role": "assistant", "content": "ok"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "and "},
+                    {"type": "input_image", "image_url": "u1"},
+                ],
+            },
+        ]
+        history, urls = _vlm_history(messages)
+        self.assertEqual(urls, ["u0", "u1"])
+        self.assertEqual(history[0]["content"], "<ov_genai_image_0>first")
+        self.assertEqual(history[1], {"role": "assistant", "content": "ok"})
+        self.assertEqual(history[2]["content"], "and <ov_genai_image_1>")
+
+
+class ExtractImageUrlTest(unittest.TestCase):
+    def test_dict_form(self):
+        self.assertEqual(
+            _extract_image_url({"type": "image_url", "image_url": {"url": "u"}}), "u"
+        )
+
+    def test_string_form(self):
+        self.assertEqual(
+            _extract_image_url({"type": "input_image", "image_url": "u"}), "u"
+        )
+
+    def test_missing_url_raises(self):
+        with self.assertRaises(InvalidImage):
+            _extract_image_url({"type": "image_url", "image_url": {}})
+        with self.assertRaises(InvalidImage):
+            _extract_image_url({"type": "image_url"})
+
+
+class FetchImageBytesTest(unittest.TestCase):
+    def test_base64_data_url(self):
+        url = "data:image/png;base64," + base64.b64encode(b"hello").decode()
+        self.assertEqual(_fetch_image_bytes(url), b"hello")
+
+    def test_malformed_data_url_raises(self):
+        with self.assertRaises(InvalidImage):
+            _fetch_image_bytes("data:nocomma")
+
+    def test_bad_base64_raises(self):
+        with self.assertRaises(InvalidImage):
+            _fetch_image_bytes("data:image/png;base64,!!!notbase64!!!")
+
+    def test_unsupported_scheme_raises(self):
+        with self.assertRaises(InvalidImage):
+            _fetch_image_bytes("ftp://host/img.png")
 
 
 if __name__ == "__main__":
