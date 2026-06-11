@@ -69,6 +69,11 @@ class DecodeImageTensorTest(unittest.TestCase):
         # PIL image is (W=3, H=2); tensor is (H, W, C) = (2, 3, 3).
         self.assertEqual(list(tensor.shape), [2, 3, 3])
 
+    def test_batched_adds_a_leading_batch_dim(self):
+        # og.Image2ImagePipeline wants a 4D NHWC (1,H,W,3) tensor, not bare HWC.
+        tensor = _decode_image_tensor(_png_bytes(size=(3, 2)), batched=True)
+        self.assertEqual(list(tensor.shape), [1, 2, 3, 3])
+
     def test_undecodable_bytes_raise_invalid_image(self):
         with self.assertRaises(InvalidImage):
             _decode_image_tensor(b"not an image")
@@ -125,8 +130,8 @@ class ImageEditDispatchTest(unittest.TestCase):
         self.assertTrue(result.images[0].startswith(b"\x89PNG"))
         self.assertEqual(be.pipeline_requests, [(model, "image2image")])
         # The decoded image tensor is forwarded as the second positional arg,
-        # shape (H, W, 3) = (4, 6, 3).
-        self.assertEqual(list(pipe.calls[0]["image"].shape), [4, 6, 3])
+        # batched for og: NHWC (1, H, W, 3) = (1, 4, 6, 3).
+        self.assertEqual(list(pipe.calls[0]["image"].shape), [1, 4, 6, 3])
         self.assertEqual(pipe.calls[0]["prompt"], "a cat")
 
     def test_only_set_params_reach_generate(self):

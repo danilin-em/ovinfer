@@ -155,12 +155,17 @@ def _fetch_image_bytes(url: str) -> bytes:
     raise InvalidImage(f"unsupported image URL scheme: {url[:32]!r}")
 
 
-def _decode_image_tensor(raw: bytes) -> Any:
-    """Decode raw image bytes into an ov.Tensor (uint8 RGB, HWC).
+def _decode_image_tensor(raw: bytes, *, batched: bool = False) -> Any:
+    """Decode raw image bytes into an ov.Tensor (uint8 RGB).
 
     pic.load() forces a full decode now so truncated/broken data raises here,
     not lazily downstream. Shared by the VLM path (via _load_image_tensor, after
     a URL fetch) and the image-edit path (raw multipart upload bytes).
+
+    Returns a 3D HWC tensor by default (what og.VLMPipeline takes per image).
+    With batched=True, returns a 4D NHWC (1,H,W,3) tensor: og.Image2ImagePipeline
+    feeds the image to a model whose input is 4D ([?,?,?,?]) and rejects a bare
+    3D tensor.
     """
     import io
 
@@ -174,7 +179,10 @@ def _decode_image_tensor(raw: bytes) -> Any:
         pic = pic.convert("RGB")
     except (UnidentifiedImageError, OSError) as exc:
         raise InvalidImage(f"could not decode image: {exc}") from exc
-    return ov.Tensor(np.array(pic))
+    arr = np.array(pic)
+    if batched:
+        arr = arr[np.newaxis, ...]
+    return ov.Tensor(arr)
 
 
 def _load_image_tensor(url: str) -> Any:
@@ -656,7 +664,7 @@ class Backend:
             raise UnsupportedModel(
                 f"model '{model_id}' is not a diffusion model and cannot edit images"
             )
-        image_tensor = _decode_image_tensor(image)
+        image_tensor = _decode_image_tensor(image, batched=True)
         kwargs: dict[str, Any] = {"num_images_per_prompt": n}
         if width is not None:
             kwargs["width"] = width
