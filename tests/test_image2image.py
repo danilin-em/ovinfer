@@ -80,5 +80,121 @@ class DecodeImageTensorTest(unittest.TestCase):
         self.assertEqual(list(tensor.shape), [2, 3, 3])
 
 
+import numpy as np
+
+from ovinfer.backend import Backend, ImageResult
+from ovinfer.errors import ModelNotFound, PipelineNotImplemented, UnsupportedModel
+
+
+class _FakeI2IPipe:
+    """Stands in for og.Image2ImagePipeline: records the prompt, the image
+    tensor (positional), and generate kwargs; returns a fake (N,H,W,3) uint8
+    tensor sized to num_images_per_prompt."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def generate(self, prompt, image, **kwargs):
+        self.calls.append({"prompt": prompt, "image": image, "kwargs": kwargs})
+        n = kwargs.get("num_images_per_prompt", 1)
+        return np.zeros((n, 4, 4, 3), dtype=np.uint8)
+
+
+class _DispatchBackend(Backend):
+    """Real Backend with _pipeline stubbed; records (model_id, kind) requests."""
+
+    def __init__(self, models_root: Path, pipe: _FakeI2IPipe) -> None:
+        super().__init__(models_root=models_root, default_device="CPU")
+        self._pipe = pipe
+        self.pipeline_requests: list[tuple[str, str]] = []
+
+    @contextmanager
+    def _pipeline(self, model_id, kind):
+        self.pipeline_requests.append((model_id, kind))
+        yield self._pipe
+
+
+class ImageEditDispatchTest(unittest.TestCase):
+    def test_requests_image2image_kind_passes_image_and_returns_pngs(self):
+        root, model = _diffusion_root()
+        pipe = _FakeI2IPipe()
+        be = _DispatchBackend(root, pipe)
+        result = be.image_edit(model, "a cat", _png_bytes(size=(6, 4)), None, n=2)
+        self.assertIsInstance(result, ImageResult)
+        self.assertEqual(len(result.images), 2)
+        self.assertTrue(result.images[0].startswith(b"\x89PNG"))
+        self.assertEqual(be.pipeline_requests, [(model, "image2image")])
+        # The decoded image tensor is forwarded as the second positional arg,
+        # shape (H, W, 3) = (4, 6, 3).
+        self.assertEqual(list(pipe.calls[0]["image"].shape), [4, 6, 3])
+        self.assertEqual(pipe.calls[0]["prompt"], "a cat")
+
+    def test_only_set_params_reach_generate(self):
+        root, model = _diffusion_root()
+        pipe = _FakeI2IPipe()
+        be = _DispatchBackend(root, pipe)
+        be.image_edit(model, "x", _png_bytes(), None)
+        # Omitted optionals must not appear (so og defaults, incl. strength=0.8,
+        # are not clobbered).
+        self.assertEqual(pipe.calls[0]["kwargs"], {"num_images_per_prompt": 1})
+
+    def test_all_params_map_to_og_kwargs(self):
+        root, model = _diffusion_root()
+        pipe = _FakeI2IPipe()
+        be = _DispatchBackend(root, pipe)
+        be.image_edit(
+            model, "x", _png_bytes(), None, n=3, width=512, height=768,
+            num_inference_steps=8, guidance_scale=0.0,
+            negative_prompt="blurry", strength=0.0, seed=7,
+        )
+        self.assertEqual(pipe.calls[0]["kwargs"], {
+            "num_images_per_prompt": 3,
+            "width": 512,
+            "height": 768,
+            "num_inference_steps": 8,
+            "guidance_scale": 0.0,   # 0.0 must pass through, not be dropped
+            "negative_prompt": "blurry",
+            "strength": 0.0,         # 0.0 must pass through, not be dropped
+            "rng_seed": 7,
+        })
+
+    def test_empty_mask_is_treated_as_no_mask(self):
+        root, model = _diffusion_root()
+        pipe = _FakeI2IPipe()
+        be = _DispatchBackend(root, pipe)
+        be.image_edit(model, "x", _png_bytes(), b"")  # zero-length mask upload
+        self.assertEqual(be.pipeline_requests, [(model, "image2image")])
+
+    def test_non_empty_mask_is_501_inpainting_without_building_pipeline(self):
+        root, model = _diffusion_root()
+        be = _DispatchBackend(root, _FakeI2IPipe())
+        with self.assertRaises(PipelineNotImplemented) as ctx:
+            be.image_edit(model, "x", _png_bytes(), b"\x89PNG-mask")
+        self.assertEqual(ctx.exception.pipeline, "InpaintingPipeline")
+        self.assertEqual(be.pipeline_requests, [])
+
+    def test_non_diffusion_model_is_unsupported_without_building_pipeline(self):
+        root, model = _llm_root()
+        be = _DispatchBackend(root, _FakeI2IPipe())
+        with self.assertRaises(UnsupportedModel):
+            be.image_edit(model, "x", _png_bytes(), None)
+        self.assertEqual(be.pipeline_requests, [])
+
+    def test_undecodable_image_is_invalid_image_without_building_pipeline(self):
+        root, model = _diffusion_root()
+        be = _DispatchBackend(root, _FakeI2IPipe())
+        with self.assertRaises(InvalidImage):
+            be.image_edit(model, "x", b"not an image", None)
+        self.assertEqual(be.pipeline_requests, [])
+
+    def test_unknown_model_404s_before_anything_else(self):
+        root, _ = _diffusion_root()
+        be = _DispatchBackend(root, _FakeI2IPipe())
+        # Non-empty mask too: model resolution must win the 404 over the mask 501.
+        with self.assertRaises(ModelNotFound):
+            be.image_edit("org/ghost", "x", _png_bytes(), b"mask")
+        self.assertEqual(be.pipeline_requests, [])
+
+
 if __name__ == "__main__":
     unittest.main()
