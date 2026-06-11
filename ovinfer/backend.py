@@ -305,7 +305,17 @@ class Backend:
         if kind == "vlm":
             return og.VLMPipeline(model_dir, device)
         if kind == "embedding":
-            return og.TextEmbeddingPipeline(model_dir, device)
+            # og's Config defaults to CLS pooling, which only suits encoder
+            # models. Pick per-model (causal LMs need last-token) so unrelated
+            # texts do not collapse to near-identical vectors. normalize stays
+            # at og's default (True).
+            cfg = og.TextEmbeddingPipeline.Config()
+            cfg.pooling_type = {
+                "cls": og.TextEmbeddingPipeline.PoolingType.CLS,
+                "mean": og.TextEmbeddingPipeline.PoolingType.MEAN,
+                "last_token": og.TextEmbeddingPipeline.PoolingType.LAST_TOKEN,
+            }[registry.embedding_pooling(model_dir)]
+            return og.TextEmbeddingPipeline(model_dir, device, cfg)
         if kind == "rerank":
             cfg = og.TextRerankPipeline.Config()
             cfg.top_n = _RERANK_TOP_N_MAX
