@@ -547,10 +547,7 @@ class Backend:
             results = results[:top_n]
         return RerankResult(results=results)
 
-    # -- not implemented in v0.1 (501 contract) ---------------------------------
-
-    def _resolve(self, model_id: str) -> Path:
-        return registry.resolve_model_dir(self.settings.models_root, model_id)
+    # -- image generation ---------------------------------------------------------
 
     def image_generate(
         self,
@@ -594,6 +591,11 @@ class Backend:
         with self._pipeline(model_id, "text2image") as pipe:
             tensor = pipe.generate(prompt, **kwargs)
         return ImageResult(images=_encode_pngs(tensor))
+
+    # -- not implemented in v0.1 (501 contract) ---------------------------------
+
+    def _resolve(self, model_id: str) -> Path:
+        return registry.resolve_model_dir(self.settings.models_root, model_id)
 
     def image_edit(
         self,
