@@ -312,6 +312,12 @@ class ImagesGenerationRouteTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
         self.assertEqual(resp.json()["error"]["code"], "model_not_found")
 
+    def test_n_zero_or_negative_is_422(self):
+        client, backend = _client(ImageResult(images=[_PNG]))
+        self.assertEqual(self._post(client, n=0).status_code, 422)
+        self.assertEqual(self._post(client, n=-1).status_code, 422)
+        self.assertEqual(backend.calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

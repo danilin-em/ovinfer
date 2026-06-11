@@ -104,7 +104,7 @@ class ImagesGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     model: str
     prompt: str
-    n: int = 1
+    n: int = Field(1, ge=1)
     size: str | None = None
     response_format: Literal["url", "b64_json"] = "b64_json"
     # Diffusion knobs (not in OpenAI's schema): forwarded to og when set, so
@@ -231,7 +231,7 @@ def _parse_size(size: str | None) -> tuple[int | None, int | None]:
 
 def _image_entry(png: bytes, response_format: str) -> dict:
     """One OpenAI images `data` entry. response_format='url' yields a data: URL
-    (this server hosts no files); 'b64_json' yields the raw base64 PNG."""
+    (this server hosts no files); 'b64_json' yields the PNG encoded as base64."""
     b64 = base64.b64encode(png).decode("ascii")
     if response_format == "url":
         return {"url": "data:image/png;base64," + b64}
