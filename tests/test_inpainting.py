@@ -225,5 +225,79 @@ class InpaintEditDispatchTest(unittest.TestCase):
         self.assertEqual(be.pipeline_requests, [])
 
 
+from fastapi.testclient import TestClient
+
+from ovinfer.server import create_app
+
+MODEL = "org/diffuser"
+_PNG = b"\x89PNG\r\n\x1a\n-fake-png-bytes"
+
+
+class _StubEditBackend:
+    """Duck-typed Backend for transport tests; records image_edit calls.
+
+    The signature mirrors the real Backend.image_edit: image/mask positional,
+    the diffusion knobs keyword-only.
+    """
+
+    def __init__(self, result_or_exc) -> None:
+        self.result_or_exc = result_or_exc
+        self.calls: list[dict] = []
+
+    def image_edit(self, model_id, prompt, image, mask, *, n, width, height,
+                   num_inference_steps, guidance_scale, negative_prompt,
+                   strength, seed):
+        self.calls.append({
+            "model_id": model_id, "prompt": prompt, "image": image, "mask": mask,
+            "n": n, "width": width, "height": height,
+            "num_inference_steps": num_inference_steps,
+            "guidance_scale": guidance_scale, "negative_prompt": negative_prompt,
+            "strength": strength, "seed": seed,
+        })
+        if isinstance(self.result_or_exc, Exception):
+            raise self.result_or_exc
+        return self.result_or_exc
+
+
+def _edit_client(result_or_exc) -> tuple[TestClient, _StubEditBackend]:
+    backend = _StubEditBackend(result_or_exc)
+    return TestClient(create_app(backend)), backend
+
+
+class InpaintRouteTest(unittest.TestCase):
+    def test_mask_upload_yields_200_envelope_and_forwards_mask_bytes(self):
+        client, backend = _edit_client(ImageResult(images=[_PNG]))
+        resp = client.post(
+            "/v1/images/edits",
+            data={"model": MODEL, "prompt": "a cat", "strength": "0.6"},
+            files={
+                "image": ("in.png", _png_bytes(), "image/png"),
+                "mask": ("m.png", b"mask-bytes", "image/png"),
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIsInstance(body["created"], int)
+        self.assertEqual(
+            body["data"][0]["b64_json"], base64.b64encode(_PNG).decode("ascii")
+        )
+        # Mask bytes reach the backend; the strength knob is forwarded.
+        self.assertEqual(backend.calls[0]["mask"], b"mask-bytes")
+        self.assertEqual(backend.calls[0]["strength"], 0.6)
+
+    def test_unsupported_model_with_mask_maps_to_400(self):
+        client, _ = _edit_client(UnsupportedModel("not a diffusion model"))
+        resp = client.post(
+            "/v1/images/edits",
+            data={"model": MODEL, "prompt": "x"},
+            files={
+                "image": ("in.png", _png_bytes(), "image/png"),
+                "mask": ("m.png", b"mask-bytes", "image/png"),
+            },
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["code"], "unsupported_model")
+
+
 if __name__ == "__main__":
     unittest.main()

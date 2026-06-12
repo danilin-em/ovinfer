@@ -88,7 +88,7 @@ class DecodeImageTensorTest(unittest.TestCase):
 import numpy as np
 
 from ovinfer.backend import Backend, ImageResult
-from ovinfer.errors import ModelNotFound, PipelineNotImplemented, UnsupportedModel
+from ovinfer.errors import ModelNotFound, UnsupportedModel
 
 
 class _FakeI2IPipe:
@@ -318,15 +318,6 @@ class ImagesEditsRouteTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["error"]["code"], "invalid_size")
         self.assertEqual(backend.calls, [])
-
-    def test_non_empty_mask_returns_501(self):
-        client, _ = _edit_client(PipelineNotImplemented("InpaintingPipeline"))
-        resp = self._post(client, files={
-            "image": ("in.png", _png_bytes(), "image/png"),
-            "mask": ("m.png", b"mask-bytes", "image/png"),
-        })
-        self.assertEqual(resp.status_code, 501)
-        self.assertEqual(resp.json()["error"]["code"], "pipeline_not_implemented")
 
     def test_invalid_image_returns_400(self):
         # Upload-decoding failures (InvalidImage) surface as 400 at the route.
