@@ -112,3 +112,76 @@ class SpeechSamplesTest(unittest.TestCase):
         self.assertEqual(r.sample_rate, 16000)
         with self.assertRaises(Exception):
             r.sample_rate = 8000  # frozen
+
+
+from contextlib import contextmanager
+
+from ovinfer.backend import Backend
+from ovinfer.errors import ModelNotFound, UnsupportedModel
+
+
+class _FakeTtsPipe:
+    """Records generate(text, **kwargs); returns a fixed fake result."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def generate(self, text, **kwargs):
+        self.calls.append({"text": text, "kwargs": kwargs})
+        return _FakeSpeechResult([np.array([0.1, 0.2, 0.3], dtype=np.float32)])
+
+
+class _DispatchBackend(Backend):
+    """Real Backend with _pipeline stubbed; records (model_id, kind) requests."""
+
+    def __init__(self, models_root: Path, pipe: _FakeTtsPipe) -> None:
+        super().__init__(models_root=models_root, default_device="CPU")
+        self._pipe = pipe
+        self.pipeline_requests: list[tuple[str, str]] = []
+
+    @contextmanager
+    def _pipeline(self, model_id, kind):
+        self.pipeline_requests.append((model_id, kind))
+        yield self._pipe
+
+
+class SpeechDispatchTest(unittest.TestCase):
+    def test_requests_tts_kind_and_returns_samples(self):
+        root, model = _tts_root()
+        pipe = _FakeTtsPipe()
+        be = _DispatchBackend(root, pipe)
+        result = be.speech(model, "hello world")
+        self.assertIsInstance(result, SpeechResult)
+        self.assertEqual(result.sample_rate, 16000)
+        self.assertEqual(result.samples.ndim, 1)
+        self.assertEqual(be.pipeline_requests, [(model, "tts")])
+
+    def test_generate_called_with_text_only(self):
+        root, model = _tts_root()
+        pipe = _FakeTtsPipe()
+        be = _DispatchBackend(root, pipe)
+        be.speech(model, "hello world")
+        self.assertEqual(pipe.calls[0]["text"], "hello world")
+        # voice is not forwarded to og: SpeechT5 uses the built-in default speaker.
+        self.assertEqual(pipe.calls[0]["kwargs"], {})
+
+    def test_voice_is_accepted_but_ignored(self):
+        root, model = _tts_root()
+        pipe = _FakeTtsPipe()
+        be = _DispatchBackend(root, pipe)
+        be.speech(model, "hi", voice="alloy")
+        self.assertEqual(pipe.calls[0]["kwargs"], {})
+
+    def test_non_tts_model_is_unsupported_without_pipeline(self):
+        root, model = _whisper_root()  # encoder but no vocoder
+        be = _DispatchBackend(root, _FakeTtsPipe())
+        with self.assertRaises(UnsupportedModel):
+            be.speech(model, "hi")
+        self.assertEqual(be.pipeline_requests, [])
+
+    def test_unknown_model_404s_before_anything(self):
+        root, _ = _tts_root()
+        be = _DispatchBackend(root, _FakeTtsPipe())
+        with self.assertRaises(ModelNotFound):
+            be.speech("org/ghost", "hi")
+        self.assertEqual(be.pipeline_requests, [])

@@ -473,6 +473,8 @@ class Backend:
             return og.InpaintingPipeline(model_dir, device)
         if kind == "whisper":
             return og.WhisperPipeline(model_dir, device)
+        if kind == "tts":
+            return og.Text2SpeechPipeline(model_dir, device)
         raise ValueError(f"Unknown pipeline kind: {kind!r}")
 
     # -- chat ------------------------------------------------------------------
@@ -915,9 +917,25 @@ class Backend:
             segments=segments,
         )
 
-    def speech(self, model_id: str, text: str, voice: str | None = None) -> bytes:
-        self._resolve(model_id)
-        raise PipelineNotImplemented("Text2SpeechPipeline")
+    def speech(self, model_id: str, text: str, voice: str | None = None) -> SpeechResult:
+        """Text-to-speech via og.Text2SpeechPipeline (SpeechT5).
+
+        Resolve (404) then the TTS-model check (400) run before the pipeline is
+        built, matching _audio_generate. voice is accepted for OpenAI
+        compatibility but ignored: SpeechT5 selects a voice via a speaker
+        embedding, not a named voice, and og's built-in default speaker (baked
+        into the runtime, offline) is used. Returns transport-agnostic 16 kHz
+        float32 samples; the transport encodes them to the requested format.
+        """
+        model_dir = registry.resolve_model_dir(self.settings.models_root, model_id)
+        if not registry.is_tts_model(model_dir):
+            raise UnsupportedModel(
+                f"model '{model_id}' is not a Text2Speech (SpeechT5) model "
+                "and cannot synthesize speech"
+            )
+        with self._pipeline(model_id, "tts") as pipe:
+            result = pipe.generate(text)
+        return SpeechResult(samples=_speech_samples(result), sample_rate=_TTS_SR)
 
     def video_generate(
         self,
