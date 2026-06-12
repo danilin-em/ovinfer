@@ -20,6 +20,7 @@ PIPELINE_KINDS = (
     "image2image",
     "inpainting",
     "whisper",
+    "tts",
 )
 
 
