@@ -50,7 +50,8 @@ OpenVINO-кода — через `openvino-env <команда>` (см. глоб
   и голый 3D HWC отвергается (VLM-путь остаётся 3D). Непустой `mask` → Inpainting (реализован, см. ниже); не-диффузионная модель → 400. Требует
   `vae_encoder` (пиксели входа → латент), в отличие от Text2Image. Приёмка
   end-to-end на `OpenVINO/LCM_Dreamshaper_v7-int8-ov` (4 шага, `strength=0.6`,
-  512×512, CPU): img2img→200/PNG, `url`→data-URL, mask→501, non-diffusion→400.
+  512×512, CPU): img2img→200/PNG, `url`→data-URL, mask→501 (на тот момент; ныне
+  Inpainting, см. ниже), non-diffusion→400.
   Спека: `docs/superpowers/specs/2026-06-11-image2image-design.md`; план:
   `docs/superpowers/plans/2026-06-12-image2image.md`.
 - **Inpainting реализован 2026-06-12**: `og.InpaintingPipeline` на
