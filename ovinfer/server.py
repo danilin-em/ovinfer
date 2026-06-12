@@ -14,7 +14,7 @@ Pipeline-to-endpoint mapping (see docs/superpowers/specs/2026-06-06-openai-serve
     Text2ImagePipeline         -> POST /v1/images/generations        (implemented)
     Image2ImagePipeline        -> POST /v1/images/edits              (implemented)
     InpaintingPipeline         -> POST /v1/images/edits (mask)       (implemented)
-    WhisperPipeline            -> POST /v1/audio/transcriptions|translations (501)
+    WhisperPipeline            -> POST /v1/audio/transcriptions|translations (implemented)
     Text2SpeechPipeline        -> POST /v1/audio/speech              (501)
     Text2VideoPipeline         -> POST /v1/videos                    (501)
 """
@@ -27,12 +27,13 @@ import uuid
 from typing import Any, Iterator, Literal
 
 from fastapi import FastAPI, File, Form, Request, Response, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
 from .backend import Backend, ChatResult
 from .errors import (
+    InvalidAudio,
     InvalidImage,
     ModelNotFound,
     OvinferError,
@@ -45,6 +46,7 @@ from .errors import (
 _ERROR_MAP: dict[type, tuple[int, str, str]] = {
     ModelNotFound: (404, "invalid_request_error", "model_not_found"),
     InvalidImage: (400, "invalid_request_error", "invalid_image"),
+    InvalidAudio: (400, "invalid_request_error", "invalid_audio"),
     UnsupportedModel: (400, "invalid_request_error", "unsupported_model"),
     PipelineNotImplemented: (501, "not_implemented", "pipeline_not_implemented"),
 }
@@ -236,6 +238,77 @@ def _image_entry(png: bytes, response_format: str) -> dict:
     if response_format == "url":
         return {"url": "data:image/png;base64," + b64}
     return {"b64_json": b64}
+
+
+# --- audio transcription rendering ----------------------------------------------
+
+def _format_timestamp(seconds: float, sep: str) -> str:
+    """Seconds -> 'HH:MM:SS{sep}mmm'. sep is ',' for SRT, '.' for VTT."""
+    if seconds < 0:
+        seconds = 0.0
+    millis = int(round(seconds * 1000))
+    hours, millis = divmod(millis, 3_600_000)
+    minutes, millis = divmod(millis, 60_000)
+    secs, millis = divmod(millis, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}{sep}{millis:03d}"
+
+
+def _segments_to_srt(segments: list) -> str:
+    """Render segments as SubRip (SRT): 1-based index, comma decimal separator."""
+    blocks = []
+    for i, seg in enumerate(segments, start=1):
+        start = _format_timestamp(seg.start, ",")
+        end = _format_timestamp(seg.end, ",")
+        blocks.append(f"{i}\n{start} --> {end}\n{seg.text.strip()}\n")
+    return "\n".join(blocks)
+
+
+def _segments_to_vtt(segments: list) -> str:
+    """Render segments as WebVTT: 'WEBVTT' header, dot decimal separator."""
+    blocks = ["WEBVTT", ""]
+    for seg in segments:
+        start = _format_timestamp(seg.start, ".")
+        end = _format_timestamp(seg.end, ".")
+        blocks.append(f"{start} --> {end}\n{seg.text.strip()}\n")
+    return "\n".join(blocks)
+
+
+def _verbose_json_body(result: Any, task: str) -> dict:
+    """OpenAI verbose_json body. Analytics fields og does not provide
+    (avg_logprob, no_speech_prob, ...) are omitted; clients read start/end/text."""
+    segments = result.segments or []
+    return {
+        "task": task,
+        "language": result.language,
+        "duration": result.duration,
+        "text": result.text,
+        "segments": [
+            {"id": i, "seek": 0, "start": seg.start, "end": seg.end,
+             "text": seg.text}
+            for i, seg in enumerate(segments)
+        ],
+    }
+
+
+def _render_transcription(result: Any, response_format: str, task: str) -> Any:
+    """Render a TranscriptionResult per response_format. json/verbose_json return
+    a dict (JSON); text/srt/vtt return a plain-text Response with the right
+    media type."""
+    if response_format == "text":
+        return PlainTextResponse(result.text)
+    if response_format == "srt":
+        return Response(
+            content=_segments_to_srt(result.segments or []),
+            media_type="application/x-subrip",
+        )
+    if response_format == "vtt":
+        return Response(
+            content=_segments_to_vtt(result.segments or []),
+            media_type="text/vtt",
+        )
+    if response_format == "verbose_json":
+        return _verbose_json_body(result, task)
+    return {"text": result.text}
 
 
 # --- app factory ---------------------------------------------------------------
@@ -443,24 +516,30 @@ def create_app(backend: Backend) -> FastAPI:
         file: UploadFile = File(...),
         language: str | None = Form(None),
         prompt: str | None = Form(None),
-        response_format: str = Form("json"),
+        response_format: Literal[
+            "json", "text", "verbose_json", "srt", "vtt"
+        ] = Form("json"),
         temperature: float = Form(0.0),
     ) -> Any:
-        return backend.transcribe(
+        result = backend.transcribe(
             model, file.file.read(), language, prompt, response_format, temperature
         )
+        return _render_transcription(result, response_format, "transcribe")
 
     @app.post("/v1/audio/translations")
     def audio_translations(
         model: str = Form(...),
         file: UploadFile = File(...),
         prompt: str | None = Form(None),
-        response_format: str = Form("json"),
+        response_format: Literal[
+            "json", "text", "verbose_json", "srt", "vtt"
+        ] = Form("json"),
         temperature: float = Form(0.0),
     ) -> Any:
-        return backend.translate(
+        result = backend.translate(
             model, file.file.read(), prompt, response_format, temperature
         )
+        return _render_transcription(result, response_format, "translate")
 
     @app.post("/v1/audio/speech")
     def audio_speech(req: SpeechRequest) -> Response:

@@ -73,12 +73,21 @@ OpenVINO-кода — через `openvino-env <команда>` (см. глоб
 - Нюанс этой машины: реальное дерево моделей —
   `~/.openvino/models/huggingface.co/<org>/<model>` (три уровня), поэтому
   `OVINFER_MODELS_ROOT=~/.openvino/models/huggingface.co`.
-- **Whisper (ASR) спланирован 2026-06-12**: `og.WhisperPipeline` на `POST
-  /v1/audio/transcriptions|translations` (batch) — заполняет готовые стабы
+- **Whisper (ASR) реализован и принят 2026-06-12**: `og.WhisperPipeline` на
+  `POST /v1/audio/transcriptions|translations` (batch) — заполнил готовые стабы
   `backend.transcribe`/`translate`. Декод аудио через PyAV (`av`) в моно 16 кГц
-  float; пять `response_format` (json/text/verbose_json/srt/vtt); маркер модели
-  `openvino_encoder_model.xml` (`is_whisper_model`), non-whisper → 400. Спека:
-  `docs/superpowers/specs/2026-06-12-whisper-design.md` (план — следующим шагом).
+  float32 (`_decode_audio`); параметры генерации через `generate(**kwargs)`
+  (`task`/`language=<|xx|>`/`initial_prompt`/`do_sample`/`return_timestamps`),
+  как у image-пайплайнов (тесты остаются og-free); пять `response_format`
+  (json/text/verbose_json/srt/vtt; таймкоды-сегменты из `og.chunks`, рендер srt/
+  vtt/verbose_json в транспорте); маркер модели `openvino_encoder_model.xml`
+  (`is_whisper_model`), non-whisper → 400 `unsupported_model`, битое аудио → 400
+  `invalid_audio` (`InvalidAudio`), кривой `response_format` → 422 (Literal).
+  Приёмка end-to-end на `OpenVINO/whisper-base-fp16-ov` (CPU): transcribe
+  (рус→рус, все пять форматов), translate (рус→англ), error-пути (400/404/422).
+  Стриминг ответа и realtime-вход — вне скоупа (follow-up'ы, см. ниже). Спека:
+  `docs/superpowers/specs/2026-06-12-whisper-design.md`; план:
+  `docs/superpowers/plans/2026-06-12-whisper.md`.
 - Следующие шаги: follow-up в `~/.openvino` (см. спеку, раздел «Связь с
   ~/.openvino»); спека каталога моделей v0.2; аудио-follow-up'ы — стриминг
   ответа (`stream:true`) и realtime-вход (WebSocket): планы в

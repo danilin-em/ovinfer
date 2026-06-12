@@ -10,6 +10,7 @@ dependencies = [
     "uvicorn",
     "python-multipart",
     "pillow>=12.2.0",
+    "av>=17.1.0",
 ]
 
 [project.scripts]

@@ -121,3 +121,17 @@ def is_diffusion_model(model_dir: Path) -> bool:
     Returns False (not an error) for a nonexistent path.
     """
     return (model_dir / "model_index.json").is_file()
+
+
+def is_whisper_model(model_dir: Path) -> bool:
+    """True if the model dir holds a Whisper ASR export (encoder-decoder).
+
+    Whisper exports ship openvino_encoder_model.xml (a separate audio encoder)
+    next to the decoder; plain LLM (openvino_model.xml) and VLM
+    (openvino_vision_embeddings_model.xml) exports do not. Audio endpoints
+    require this marker; a model without it is rejected with 400 rather than
+    failing pipeline load.
+
+    Returns False (not an error) for a nonexistent path.
+    """
+    return (model_dir / "openvino_encoder_model.xml").is_file()

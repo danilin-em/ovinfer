@@ -33,3 +33,8 @@ class UnsupportedModel(OvinferError):
 
 class ConfigError(OvinferError):
     """Invalid configuration (bad device-map syntax, preload over capacity, ...)."""
+
+
+class InvalidAudio(OvinferError):
+    """An uploaded audio file could not be decoded (broken or unsupported
+    container/codec, or no audio stream)."""

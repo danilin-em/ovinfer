@@ -18,7 +18,12 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from . import config, npu, registry
-from .errors import InvalidImage, PipelineNotImplemented, UnsupportedModel
+from .errors import (
+    InvalidAudio,
+    InvalidImage,
+    PipelineNotImplemented,
+    UnsupportedModel,
+)
 
 _IMAGE_PART_TYPES = {"image_url", "input_image"}
 _QUEUE_END = object()
@@ -57,6 +62,21 @@ class RerankResult:
 @dataclass(frozen=True)
 class ImageResult:
     images: list[bytes]  # each entry is a PNG-encoded image
+
+
+@dataclass(frozen=True)
+class Segment:
+    start: float
+    end: float
+    text: str
+
+
+@dataclass(frozen=True)
+class TranscriptionResult:
+    text: str
+    language: str | None
+    duration: float | None
+    segments: list[Segment] | None  # None unless timestamps were requested
 
 
 def messages_have_images(messages: list[dict[str, Any]]) -> bool:
@@ -222,6 +242,56 @@ def _decode_mask_tensor(raw: bytes) -> Any:
     return ov.Tensor(rgb[np.newaxis, ...])
 
 
+_TARGET_SR = 16000
+
+
+def _strip_lang_token(raw: str | None) -> str | None:
+    """'<|en|>' -> 'en'; None or '' -> None. Best-effort for verbose_json."""
+    if not raw:
+        return None
+    return raw.strip("<|>") or None
+
+
+def _decode_audio(raw: bytes) -> Any:
+    """Decode uploaded audio bytes into a mono 16 kHz float32 numpy array.
+
+    og.WhisperPipeline.generate wants raw speech normalized to ~[-1, 1] at
+    16 kHz. PyAV (vendored ffmpeg) decodes any container/codec ffmpeg supports
+    (wav/mp3/m4a/webm/flac/ogg/opus) in-process; an AudioResampler converts each
+    decoded frame to mono float ('flt' is already in [-1, 1]) at 16 kHz, and the
+    frames are concatenated. Broken/unsupported input raises InvalidAudio (400).
+    """
+    import io
+
+    import av
+    import numpy as np
+
+    try:
+        container = av.open(io.BytesIO(raw))
+    except (av.error.FFmpegError, OSError, ValueError) as exc:
+        raise InvalidAudio(f"could not open audio: {exc}") from exc
+    try:
+        if not container.streams.audio:
+            raise InvalidAudio("file has no audio stream")
+        stream = container.streams.audio[0]
+        resampler = av.AudioResampler(format="flt", layout="mono", rate=_TARGET_SR)
+        chunks: list[np.ndarray] = []
+        for frame in container.decode(stream):
+            for resampled in resampler.resample(frame):
+                chunks.append(resampled.to_ndarray().reshape(-1))
+        for resampled in resampler.resample(None):  # flush the resampler tail
+            chunks.append(resampled.to_ndarray().reshape(-1))
+    except InvalidAudio:
+        raise
+    except (av.error.FFmpegError, OSError, ValueError) as exc:
+        raise InvalidAudio(f"could not decode audio: {exc}") from exc
+    finally:
+        container.close()
+    if not chunks:
+        raise InvalidAudio("audio file contains no decodable samples")
+    return np.concatenate(chunks).astype(np.float32)
+
+
 def _encode_pngs(tensor: Any) -> list[bytes]:
     """Encode an og image tensor (uint8 RGB, (N,H,W,3) or (H,W,3)) as PNG bytes.
 
@@ -375,6 +445,8 @@ class Backend:
             return og.Image2ImagePipeline(model_dir, device)
         if kind == "inpainting":
             return og.InpaintingPipeline(model_dir, device)
+        if kind == "whisper":
+            return og.WhisperPipeline(model_dir, device)
         raise ValueError(f"Unknown pipeline kind: {kind!r}")
 
     # -- chat ------------------------------------------------------------------
@@ -729,6 +801,10 @@ class Backend:
     def _resolve(self, model_id: str) -> Path:
         return registry.resolve_model_dir(self.settings.models_root, model_id)
 
+    # -- audio transcription ------------------------------------------------------
+
+    _TIMESTAMP_FORMATS = ("verbose_json", "srt", "vtt")
+
     def transcribe(
         self,
         model_id: str,
@@ -737,9 +813,12 @@ class Backend:
         prompt: str | None = None,
         response_format: str = "json",
         temperature: float = 0.0,
-    ) -> dict:
-        self._resolve(model_id)
-        raise PipelineNotImplemented("WhisperPipeline")
+    ) -> TranscriptionResult:
+        """Speech-to-text in the audio's own language via og.WhisperPipeline."""
+        return self._audio_generate(
+            model_id, audio, "transcribe", language, prompt,
+            response_format, temperature,
+        )
 
     def translate(
         self,
@@ -748,9 +827,67 @@ class Backend:
         prompt: str | None = None,
         response_format: str = "json",
         temperature: float = 0.0,
-    ) -> dict:
-        self._resolve(model_id)
-        raise PipelineNotImplemented("WhisperPipeline")
+    ) -> TranscriptionResult:
+        """Speech-to-English translation via og.WhisperPipeline (task=translate)."""
+        return self._audio_generate(
+            model_id, audio, "translate", None, prompt,
+            response_format, temperature,
+        )
+
+    def _audio_generate(
+        self,
+        model_id: str,
+        audio: bytes,
+        task: str,
+        language: str | None,
+        prompt: str | None,
+        response_format: str,
+        temperature: float,
+    ) -> TranscriptionResult:
+        """Shared core for transcribe/translate.
+
+        Check order tracks cost (like image_edit): model resolution (404) first;
+        the Whisper-model check (400 UnsupportedModel) before any decode; the
+        audio is decoded (400 InvalidAudio on bad bytes) before the expensive
+        pipeline build, so a broken upload 400s without loading the model.
+        Generation params go as generate(**kwargs) — og maps them onto
+        WhisperGenerationConfig fields, matching the LLM/image pipelines — and
+        only explicitly-set params are forwarded. Timestamps (og chunks) are
+        requested only for the formats that render them.
+        """
+        model_dir = registry.resolve_model_dir(self.settings.models_root, model_id)
+        if not registry.is_whisper_model(model_dir):
+            raise UnsupportedModel(
+                f"model '{model_id}' is not a Whisper model "
+                "and cannot transcribe audio"
+            )
+        samples = _decode_audio(audio)
+        want_timestamps = response_format in self._TIMESTAMP_FORMATS
+        kwargs: dict[str, Any] = {"task": task}
+        if language is not None:
+            kwargs["language"] = f"<|{language}|>"
+        if prompt:
+            kwargs["initial_prompt"] = prompt
+        if temperature and temperature > 0:
+            kwargs["do_sample"] = True
+            kwargs["temperature"] = temperature
+        if want_timestamps:
+            kwargs["return_timestamps"] = True
+        with self._pipeline(model_id, "whisper") as pipe:
+            result = pipe.generate(samples, **kwargs)
+        text = result.texts[0].strip() if result.texts else ""
+        segments = None
+        if want_timestamps:
+            segments = [
+                Segment(start=float(c.start_ts), end=float(c.end_ts), text=c.text)
+                for c in (result.chunks or [])
+            ]
+        return TranscriptionResult(
+            text=text,
+            language=_strip_lang_token(getattr(result, "language", None)),
+            duration=len(samples) / _TARGET_SR,
+            segments=segments,
+        )
 
     def speech(self, model_id: str, text: str, voice: str | None = None) -> bytes:
         self._resolve(model_id)
