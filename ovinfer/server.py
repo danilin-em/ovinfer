@@ -311,6 +311,81 @@ def _render_transcription(result: Any, response_format: str, task: str) -> Any:
     return {"text": result.text}
 
 
+# --- audio speech encoding ------------------------------------------------------
+
+_TTS_MEDIA_TYPES = {
+    "wav": "audio/wav",
+    "pcm": "audio/pcm",
+    "mp3": "audio/mpeg",
+    "opus": "audio/ogg",
+    "aac": "audio/aac",
+    "flac": "audio/flac",
+}
+
+# (container format, codec) for the PyAV-encoded formats. wav/pcm use stdlib.
+_TTS_PYAV_CODECS = {
+    "mp3": ("mp3", "libmp3lame"),
+    "opus": ("ogg", "libopus"),
+    "aac": ("adts", "aac"),
+    "flac": ("flac", "flac"),
+}
+
+
+def _to_int16(samples: Any) -> Any:
+    """Float32 waveform in ~[-1, 1] -> clipped little-endian int16 PCM."""
+    import numpy as np
+
+    return (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
+
+
+def _encode_speech(samples: Any, sample_rate: int, response_format: str) -> bytes:
+    """Encode a mono float32 waveform to the requested container/codec.
+
+    wav/pcm use stdlib: float is scaled to int16 PCM; wav adds a RIFF header,
+    pcm is the raw little-endian int16 bytes with no header. mp3/opus/aac/flac
+    are muxed in-memory via PyAV (already a dependency): an AudioResampler
+    converts the s16 frame to the codec's sample format, frames are encoded and
+    the packets muxed, then the encoder is flushed.
+    """
+    import io
+    import wave
+
+    pcm = _to_int16(samples)
+    if response_format == "pcm":
+        return pcm.tobytes()
+    if response_format == "wav":
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sample_rate)
+            w.writeframes(pcm.tobytes())
+        return buf.getvalue()
+
+    import av
+
+    container_format, codec = _TTS_PYAV_CODECS[response_format]
+    buf = io.BytesIO()
+    container = av.open(buf, mode="w", format=container_format)
+    try:
+        stream = container.add_stream(codec, rate=sample_rate)
+        frame = av.AudioFrame.from_ndarray(
+            pcm.reshape(1, -1), format="s16", layout="mono"
+        )
+        frame.sample_rate = sample_rate
+        resampler = av.AudioResampler(
+            format=stream.format.name, layout="mono", rate=sample_rate
+        )
+        for rframe in resampler.resample(frame):
+            for packet in stream.encode(rframe):
+                container.mux(packet)
+        for packet in stream.encode(None):  # flush the encoder
+            container.mux(packet)
+    finally:
+        container.close()
+    return buf.getvalue()
+
+
 # --- app factory ---------------------------------------------------------------
 
 def create_app(backend: Backend) -> FastAPI:

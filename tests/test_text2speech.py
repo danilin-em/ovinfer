@@ -185,3 +185,68 @@ class SpeechDispatchTest(unittest.TestCase):
         with self.assertRaises(ModelNotFound):
             be.speech("org/ghost", "hi")
         self.assertEqual(be.pipeline_requests, [])
+
+
+from ovinfer.server import _TTS_MEDIA_TYPES, _encode_speech
+
+
+def _sine(seconds: float = 0.3, sr: int = 16000):
+    n = int(seconds * sr)
+    t = np.arange(n, dtype=np.float32)
+    return (0.2 * np.sin(2 * np.pi * 440 * t / sr)).astype(np.float32), sr
+
+
+def _decode_count(data: bytes) -> int:
+    """Total decoded sample count via PyAV (proves the bytes are valid audio)."""
+    import io
+
+    import av
+
+    container = av.open(io.BytesIO(data))
+    total = sum(frame.samples for frame in container.decode(container.streams.audio[0]))
+    container.close()
+    return total
+
+
+class EncodeSpeechTest(unittest.TestCase):
+    def test_media_types_cover_all_formats(self):
+        self.assertEqual(
+            set(_TTS_MEDIA_TYPES),
+            {"wav", "pcm", "mp3", "opus", "aac", "flac"},
+        )
+
+    def test_pcm_is_raw_int16_no_header(self):
+        s, sr = _sine()
+        out = _encode_speech(s, sr, "pcm")
+        self.assertEqual(len(out), 2 * len(s))  # 16-bit mono, no header
+
+    def test_wav_has_riff_header_and_decodes(self):
+        s, sr = _sine()
+        out = _encode_speech(s, sr, "wav")
+        self.assertEqual(out[:4], b"RIFF")
+        self.assertEqual(_decode_count(out), len(s))  # lossless, exact
+
+    def test_flac_has_magic_and_decodes(self):
+        s, sr = _sine()
+        out = _encode_speech(s, sr, "flac")
+        self.assertEqual(out[:4], b"fLaC")
+        self.assertEqual(_decode_count(out), len(s))  # lossless, exact
+
+    def test_opus_has_ogg_magic_and_decodes(self):
+        s, sr = _sine()
+        out = _encode_speech(s, sr, "opus")
+        self.assertEqual(out[:4], b"OggS")
+        self.assertGreater(_decode_count(out), 0)
+
+    def test_mp3_decodes_and_starts_plausibly(self):
+        s, sr = _sine()
+        out = _encode_speech(s, sr, "mp3")
+        self.assertTrue(out.startswith(b"ID3") or out[0] == 0xFF, out[:4])
+        self.assertGreater(_decode_count(out), 0)
+
+    def test_aac_adts_sync_and_decodes(self):
+        s, sr = _sine()
+        out = _encode_speech(s, sr, "aac")
+        self.assertEqual(out[0], 0xFF)            # ADTS sync word (0xFFF...)
+        self.assertEqual(out[1] & 0xF0, 0xF0)
+        self.assertGreater(_decode_count(out), 0)
