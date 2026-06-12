@@ -111,6 +111,25 @@ class DecodeMaskTensorTest(unittest.TestCase):
         with self.assertRaises(InvalidImage):
             _decode_mask_tensor(b"not an image")
 
+    def test_palette_transparency_mask_treated_like_alpha(self):
+        from PIL import Image
+
+        # A palette ("P") PNG with a transparent palette index. The loaded mode
+        # is "P" (not RGBA/LA), so the decoder must catch it via the
+        # "transparency" in pic.info branch and treat the transparent index as
+        # the edit region (transparent -> white -> repaint), like alpha.
+        pal = Image.new("P", (4, 4), 1)   # index 1 = opaque (keep)
+        for y in range(2):
+            for x in range(2):
+                pal.putpixel((x, y), 0)   # top-left 2x2 -> index 0 (transparent)
+        buf = io.BytesIO()
+        pal.save(buf, format="PNG", transparency=0)
+
+        out = np.asarray(_decode_mask_tensor(buf.getvalue()).data)
+        self.assertEqual(list(out.shape), [1, 4, 4, 3])
+        self.assertTrue((out[0, 0:2, 0:2, :] == 255).all())  # transparent -> repaint
+        self.assertTrue((out[0, 2:, 2:, :] == 0).all())      # opaque -> keep
+
 
 from ovinfer.backend import Backend, ImageResult
 from ovinfer.errors import ModelNotFound, UnsupportedModel
