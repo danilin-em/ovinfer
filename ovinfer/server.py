@@ -381,6 +381,9 @@ def _encode_speech(samples: Any, sample_rate: int, response_format: str) -> byte
         for rframe in resampler.resample(frame):
             for packet in stream.encode(rframe):
                 container.mux(packet)
+        for rframe in resampler.resample(None):  # flush the resampler tail
+            for packet in stream.encode(rframe):
+                container.mux(packet)
         for packet in stream.encode(None):  # flush the encoder
             container.mux(packet)
     finally:
