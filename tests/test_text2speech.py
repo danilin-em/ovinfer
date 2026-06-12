@@ -332,3 +332,4 @@ class SpeechRouteTest(unittest.TestCase):
         client, _ = _speech_client(ModelNotFound("org/ghost", "/models"))
         resp = client.post("/v1/audio/speech", json={"model": "org/ghost", "input": "hi"})
         self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["error"]["code"], "model_not_found")
