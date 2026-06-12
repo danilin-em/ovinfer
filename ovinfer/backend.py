@@ -79,6 +79,12 @@ class TranscriptionResult:
     segments: list[Segment] | None  # None unless timestamps were requested
 
 
+@dataclass(frozen=True)
+class SpeechResult:
+    samples: Any      # numpy float32, mono, ~[-1, 1]
+    sample_rate: int  # 16000 (SpeechT5)
+
+
 def messages_have_images(messages: list[dict[str, Any]]) -> bool:
     """True if any message carries an image content part (VLM request)."""
     for msg in messages:
@@ -290,6 +296,26 @@ def _decode_audio(raw: bytes) -> Any:
     if not chunks:
         raise InvalidAudio("audio file contains no decodable samples")
     return np.concatenate(chunks).astype(np.float32)
+
+
+_TTS_SR = 16000
+
+
+def _speech_samples(result: Any) -> Any:
+    """Extract a 1-D float32 waveform from a Text2SpeechDecodedResults.
+
+    og returns .speeches as a list of ov.Tensor (one per input text); we send a
+    single text, so speeches[0] is the waveform. Like _encode_pngs, the tensor's
+    backing numpy view (.data) is taken explicitly (np.array on an ov.Tensor
+    wraps it as a 0-d object array). Shape ((1, n) vs (n,)) is flattened with
+    reshape(-1).
+    """
+    import numpy as np
+    import openvino as ov
+
+    speech = result.speeches[0]
+    arr = np.asarray(speech.data if isinstance(speech, ov.Tensor) else speech)
+    return arr.reshape(-1).astype(np.float32)
 
 
 def _encode_pngs(tensor: Any) -> list[bytes]:
