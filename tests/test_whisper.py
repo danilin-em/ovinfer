@@ -276,5 +276,225 @@ class TranscribeDispatchTest(unittest.TestCase):
         self.assertEqual(be.pipeline_requests, [])
 
 
+from fastapi.testclient import TestClient
+
+from ovinfer.server import (
+    _format_timestamp,
+    _render_transcription,
+    _segments_to_srt,
+    _segments_to_vtt,
+    create_app,
+)
+
+MODEL = "org/whisper"
+
+
+class TimestampFormatTest(unittest.TestCase):
+    def test_srt_uses_comma_separator(self):
+        self.assertEqual(_format_timestamp(3661.5, ","), "01:01:01,500")
+
+    def test_vtt_uses_dot_separator(self):
+        self.assertEqual(_format_timestamp(3661.5, "."), "01:01:01.500")
+
+    def test_zero(self):
+        self.assertEqual(_format_timestamp(0.0, ","), "00:00:00,000")
+
+    def test_negative_clamped_to_zero(self):
+        self.assertEqual(_format_timestamp(-1.0, "."), "00:00:00.000")
+
+
+class SubtitleRenderTest(unittest.TestCase):
+    def _segs(self):
+        return [Segment(0.0, 1.5, "hello"), Segment(1.5, 2.0, "world")]
+
+    def test_srt_structure(self):
+        out = _segments_to_srt(self._segs())
+        self.assertIn("1\n00:00:00,000 --> 00:00:01,500\nhello", out)
+        self.assertIn("2\n00:00:01,500 --> 00:00:02,000\nworld", out)
+
+    def test_vtt_starts_with_header(self):
+        out = _segments_to_vtt(self._segs())
+        self.assertTrue(out.startswith("WEBVTT\n"))
+        self.assertIn("00:00:00.000 --> 00:00:01.500\nhello", out)
+
+
+class RenderTranscriptionTest(unittest.TestCase):
+    def _result(self, segments=None):
+        return TranscriptionResult(
+            text="hello world", language="en", duration=2.0, segments=segments
+        )
+
+    def test_json_returns_text_only_dict(self):
+        out = _render_transcription(self._result(), "json", "transcribe")
+        self.assertEqual(out, {"text": "hello world"})
+
+    def test_verbose_json_includes_segments_and_meta(self):
+        segs = [Segment(0.0, 1.0, "hello"), Segment(1.0, 2.0, "world")]
+        out = _render_transcription(self._result(segs), "verbose_json", "translate")
+        self.assertEqual(out["task"], "translate")
+        self.assertEqual(out["language"], "en")
+        self.assertEqual(out["duration"], 2.0)
+        self.assertEqual(out["text"], "hello world")
+        self.assertEqual(len(out["segments"]), 2)
+        self.assertEqual(out["segments"][0]["start"], 0.0)
+        self.assertEqual(out["segments"][0]["end"], 1.0)
+        self.assertEqual(out["segments"][0]["text"], "hello")
+        self.assertEqual(out["segments"][0]["id"], 0)
+
+
+class _StubAudioBackend:
+    """Duck-typed Backend for transport tests; records transcribe/translate calls."""
+
+    def __init__(self, result_or_exc) -> None:
+        self.result_or_exc = result_or_exc
+        self.calls: list[dict] = []
+
+    def transcribe(self, model_id, audio, language, prompt, response_format,
+                   temperature):
+        self.calls.append({
+            "method": "transcribe", "model_id": model_id, "audio": audio,
+            "language": language, "prompt": prompt,
+            "response_format": response_format, "temperature": temperature,
+        })
+        if isinstance(self.result_or_exc, Exception):
+            raise self.result_or_exc
+        return self.result_or_exc
+
+    def translate(self, model_id, audio, prompt, response_format, temperature):
+        self.calls.append({
+            "method": "translate", "model_id": model_id, "audio": audio,
+            "prompt": prompt, "response_format": response_format,
+            "temperature": temperature,
+        })
+        if isinstance(self.result_or_exc, Exception):
+            raise self.result_or_exc
+        return self.result_or_exc
+
+
+def _audio_client(result_or_exc):
+    backend = _StubAudioBackend(result_or_exc)
+    return TestClient(create_app(backend)), backend
+
+
+_SEGS = [Segment(0.0, 1.0, "hello"), Segment(1.0, 2.0, "world")]
+
+
+def _ok_result(segments=None):
+    return TranscriptionResult(
+        text="hello world", language="en", duration=2.0, segments=segments
+    )
+
+
+class AudioRouteTest(unittest.TestCase):
+    def test_json_default(self):
+        client, backend = _audio_client(_ok_result())
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            data={"model": MODEL},
+            files={"file": ("a.wav", b"RIFFfake", "audio/wav")},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"text": "hello world"})
+        self.assertEqual(backend.calls[0]["audio"], b"RIFFfake")
+
+    def test_text_is_plain_body(self):
+        client, _ = _audio_client(_ok_result())
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            data={"model": MODEL, "response_format": "text"},
+            files={"file": ("a.wav", b"RIFFfake", "audio/wav")},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.headers["content-type"].startswith("text/plain"))
+        self.assertEqual(resp.text, "hello world")
+
+    def test_verbose_json_has_segments(self):
+        client, _ = _audio_client(_ok_result(_SEGS))
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            data={"model": MODEL, "response_format": "verbose_json"},
+            files={"file": ("a.wav", b"RIFFfake", "audio/wav")},
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["task"], "transcribe")
+        self.assertEqual(len(body["segments"]), 2)
+
+    def test_srt_body_and_content_type(self):
+        client, _ = _audio_client(_ok_result(_SEGS))
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            data={"model": MODEL, "response_format": "srt"},
+            files={"file": ("a.wav", b"RIFFfake", "audio/wav")},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("application/x-subrip", resp.headers["content-type"])
+        self.assertIn("00:00:00,000 --> 00:00:01,000", resp.text)
+
+    def test_vtt_body_and_content_type(self):
+        client, _ = _audio_client(_ok_result(_SEGS))
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            data={"model": MODEL, "response_format": "vtt"},
+            files={"file": ("a.wav", b"RIFFfake", "audio/wav")},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("text/vtt", resp.headers["content-type"])
+        self.assertTrue(resp.text.startswith("WEBVTT"))
+
+    def test_invalid_response_format_is_422(self):
+        client, _ = _audio_client(_ok_result())
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            data={"model": MODEL, "response_format": "bogus"},
+            files={"file": ("a.wav", b"RIFFfake", "audio/wav")},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    def test_language_prompt_temperature_forwarded(self):
+        client, backend = _audio_client(_ok_result())
+        client.post(
+            "/v1/audio/transcriptions",
+            data={"model": MODEL, "language": "ru", "prompt": "hi",
+                  "temperature": "0.4"},
+            files={"file": ("a.wav", b"RIFFfake", "audio/wav")},
+        )
+        call = backend.calls[0]
+        self.assertEqual(call["language"], "ru")
+        self.assertEqual(call["prompt"], "hi")
+        self.assertEqual(call["temperature"], 0.4)
+
+    def test_unsupported_model_maps_to_400(self):
+        client, _ = _audio_client(UnsupportedModel("not a whisper model"))
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            data={"model": MODEL},
+            files={"file": ("a.wav", b"RIFFfake", "audio/wav")},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["code"], "unsupported_model")
+
+    def test_invalid_audio_maps_to_400(self):
+        client, _ = _audio_client(InvalidAudio("could not decode audio"))
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            data={"model": MODEL},
+            files={"file": ("a.wav", b"RIFFfake", "audio/wav")},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["code"], "invalid_audio")
+
+    def test_translations_route_uses_translate_without_language(self):
+        client, backend = _audio_client(_ok_result())
+        resp = client.post(
+            "/v1/audio/translations",
+            data={"model": MODEL},
+            files={"file": ("a.wav", b"RIFFfake", "audio/wav")},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(backend.calls[0]["method"], "translate")
+        self.assertNotIn("language", backend.calls[0])
+
+
 if __name__ == "__main__":
     unittest.main()
