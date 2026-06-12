@@ -88,6 +88,20 @@ OpenVINO-кода — через `openvino-env <команда>` (см. глоб
   Стриминг ответа и realtime-вход — вне скоупа (follow-up'ы, см. ниже). Спека:
   `docs/superpowers/specs/2026-06-12-whisper-design.md`; план:
   `docs/superpowers/plans/2026-06-12-whisper.md`.
+- **Text2Speech (TTS) реализован 2026-06-12**: `og.Text2SpeechPipeline` (SpeechT5)
+  на `POST /v1/audio/speech` — заполнил стаб `backend.speech`. Резолв (404) →
+  маркер `is_tts_model` (`openvino_vocoder.xml`, 400 non-tts) → `generate(text)`
+  → 16 кГц float32 samples в `SpeechResult`; кодирование в транспорте
+  (`_encode_speech`): wav/pcm — stdlib `wave`, mp3/opus/aac/flac — PyAV (уже в
+  deps). `response_format` — `Literal` из шести, **дефолт mp3** (как у
+  OpenAI-клиентов). `voice` принимается, но игнорируется (вшитый дефолтный
+  speaker SpeechT5, офлайн); реальный выбор голоса — follow-up. SpeechT5 несёт и
+  `openvino_encoder_model.xml` (маркер Whisper): диспетчеризация по эндпоинту,
+  TTS→/transcriptions даёт build-500 (общий follow-up). Только SpeechT5 (как
+  Text2Image — только SD/Flux/LCM); Kokoro/Qwen-TTS → 400. Приёмка end-to-end на
+  `llmware/speech-t5-tts-ov` (CPU). Спека:
+  `docs/superpowers/specs/2026-06-12-text2speech-design.md`; план:
+  `docs/superpowers/plans/2026-06-12-text2speech.md`.
 - Следующие шаги: follow-up в `~/.openvino` (см. спеку, раздел «Связь с
   ~/.openvino»); спека каталога моделей v0.2; аудио-follow-up'ы — стриминг
   ответа (`stream:true`) и realtime-вход (WebSocket): планы в

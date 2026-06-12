@@ -15,7 +15,7 @@ Pipeline-to-endpoint mapping (see docs/superpowers/specs/2026-06-06-openai-serve
     Image2ImagePipeline        -> POST /v1/images/edits              (implemented)
     InpaintingPipeline         -> POST /v1/images/edits (mask)       (implemented)
     WhisperPipeline            -> POST /v1/audio/transcriptions|translations (implemented)
-    Text2SpeechPipeline        -> POST /v1/audio/speech              (501)
+    Text2SpeechPipeline        -> POST /v1/audio/speech              (implemented)
     Text2VideoPipeline         -> POST /v1/videos                    (501)
 """
 
@@ -121,10 +121,12 @@ class SpeechRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     model: str
     input: str
+    # Accepted for OpenAI compatibility but ignored: SpeechT5 selects a voice via
+    # a speaker embedding, not a named voice; og's default speaker is used.
     voice: str | None = None
-    # Text2SpeechPipeline produces WAV; mp3 (OpenAI's default) would need
-    # transcoding, so wav is this server's default.
-    response_format: str = "wav"
+    # SpeechT5 outputs 16 kHz audio; the transport encodes it to the requested
+    # container/codec. Default mp3 matches OpenAI clients' default.
+    response_format: Literal["wav", "pcm", "mp3", "opus", "aac", "flac"] = "mp3"
 
 
 class VideoGenerationRequest(BaseModel):
@@ -309,6 +311,84 @@ def _render_transcription(result: Any, response_format: str, task: str) -> Any:
     if response_format == "verbose_json":
         return _verbose_json_body(result, task)
     return {"text": result.text}
+
+
+# --- audio speech encoding ------------------------------------------------------
+
+_TTS_MEDIA_TYPES = {
+    "wav": "audio/wav",
+    "pcm": "audio/pcm",
+    "mp3": "audio/mpeg",
+    "opus": "audio/ogg",
+    "aac": "audio/aac",
+    "flac": "audio/flac",
+}
+
+# (container format, codec) for the PyAV-encoded formats. wav/pcm use stdlib.
+_TTS_PYAV_CODECS = {
+    "mp3": ("mp3", "libmp3lame"),
+    "opus": ("ogg", "libopus"),
+    "aac": ("adts", "aac"),
+    "flac": ("flac", "flac"),
+}
+
+
+def _to_int16(samples: Any) -> Any:
+    """Float32 waveform in ~[-1, 1] -> clipped little-endian int16 PCM."""
+    import numpy as np
+
+    return (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
+
+
+def _encode_speech(samples: Any, sample_rate: int, response_format: str) -> bytes:
+    """Encode a mono float32 waveform to the requested container/codec.
+
+    wav/pcm use stdlib: float is scaled to int16 PCM; wav adds a RIFF header,
+    pcm is the raw little-endian int16 bytes with no header. mp3/opus/aac/flac
+    are muxed in-memory via PyAV (already a dependency): an AudioResampler
+    converts the s16 frame to the codec's sample format, frames are encoded and
+    the packets muxed, then the encoder is flushed.
+    """
+    import io
+    import wave
+
+    pcm = _to_int16(samples)
+    if response_format == "pcm":
+        return pcm.tobytes()
+    if response_format == "wav":
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sample_rate)
+            w.writeframes(pcm.tobytes())
+        return buf.getvalue()
+
+    import av
+
+    container_format, codec = _TTS_PYAV_CODECS[response_format]
+    buf = io.BytesIO()
+    container = av.open(buf, mode="w", format=container_format)
+    try:
+        stream = container.add_stream(codec, rate=sample_rate)
+        frame = av.AudioFrame.from_ndarray(
+            pcm.reshape(1, -1), format="s16", layout="mono"
+        )
+        frame.sample_rate = sample_rate
+        resampler = av.AudioResampler(
+            format=stream.format.name, layout="mono", rate=sample_rate
+        )
+        for rframe in resampler.resample(frame):
+            for packet in stream.encode(rframe):
+                container.mux(packet)
+        for rframe in resampler.resample(None):  # flush the resampler tail
+            for packet in stream.encode(rframe):
+                container.mux(packet)
+        for packet in stream.encode(None):  # flush the encoder
+            container.mux(packet)
+    finally:
+        container.close()
+    return buf.getvalue()
 
 
 # --- app factory ---------------------------------------------------------------
@@ -543,8 +623,11 @@ def create_app(backend: Backend) -> FastAPI:
 
     @app.post("/v1/audio/speech")
     def audio_speech(req: SpeechRequest) -> Response:
-        wav = backend.speech(req.model, req.input, req.voice)
-        return Response(content=wav, media_type="audio/wav")
+        result = backend.speech(req.model, req.input, req.voice)
+        audio = _encode_speech(result.samples, result.sample_rate, req.response_format)
+        return Response(
+            content=audio, media_type=_TTS_MEDIA_TYPES[req.response_format]
+        )
 
     @app.post("/v1/videos")
     def videos(req: VideoGenerationRequest) -> Any:

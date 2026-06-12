@@ -79,6 +79,12 @@ class TranscriptionResult:
     segments: list[Segment] | None  # None unless timestamps were requested
 
 
+@dataclass(frozen=True)
+class SpeechResult:
+    samples: Any      # numpy float32, mono, ~[-1, 1]
+    sample_rate: int  # 16000 (SpeechT5)
+
+
 def messages_have_images(messages: list[dict[str, Any]]) -> bool:
     """True if any message carries an image content part (VLM request)."""
     for msg in messages:
@@ -292,6 +298,26 @@ def _decode_audio(raw: bytes) -> Any:
     return np.concatenate(chunks).astype(np.float32)
 
 
+_TTS_SR = 16000
+
+
+def _speech_samples(result: Any) -> Any:
+    """Extract a 1-D float32 waveform from a Text2SpeechDecodedResults.
+
+    og returns .speeches as a list of ov.Tensor (one per input text); we send a
+    single text, so speeches[0] is the waveform. Like _encode_pngs, the tensor's
+    backing numpy view (.data) is taken explicitly (np.array on an ov.Tensor
+    wraps it as a 0-d object array). Shape ((1, n) vs (n,)) is flattened with
+    reshape(-1).
+    """
+    import numpy as np
+    import openvino as ov
+
+    speech = result.speeches[0]
+    arr = np.asarray(speech.data if isinstance(speech, ov.Tensor) else speech)
+    return arr.reshape(-1).astype(np.float32)
+
+
 def _encode_pngs(tensor: Any) -> list[bytes]:
     """Encode an og image tensor (uint8 RGB, (N,H,W,3) or (H,W,3)) as PNG bytes.
 
@@ -447,6 +473,8 @@ class Backend:
             return og.InpaintingPipeline(model_dir, device)
         if kind == "whisper":
             return og.WhisperPipeline(model_dir, device)
+        if kind == "tts":
+            return og.Text2SpeechPipeline(model_dir, device)
         raise ValueError(f"Unknown pipeline kind: {kind!r}")
 
     # -- chat ------------------------------------------------------------------
@@ -889,9 +917,25 @@ class Backend:
             segments=segments,
         )
 
-    def speech(self, model_id: str, text: str, voice: str | None = None) -> bytes:
-        self._resolve(model_id)
-        raise PipelineNotImplemented("Text2SpeechPipeline")
+    def speech(self, model_id: str, text: str, voice: str | None = None) -> SpeechResult:
+        """Text-to-speech via og.Text2SpeechPipeline (SpeechT5).
+
+        Resolve (404) then the TTS-model check (400) run before the pipeline is
+        built, matching _audio_generate. voice is accepted for OpenAI
+        compatibility but ignored: SpeechT5 selects a voice via a speaker
+        embedding, not a named voice, and og's built-in default speaker (baked
+        into the runtime, offline) is used. Returns transport-agnostic 16 kHz
+        float32 samples; the transport encodes them to the requested format.
+        """
+        model_dir = registry.resolve_model_dir(self.settings.models_root, model_id)
+        if not registry.is_tts_model(model_dir):
+            raise UnsupportedModel(
+                f"model '{model_id}' is not a Text2Speech (SpeechT5) model "
+                "and cannot synthesize speech"
+            )
+        with self._pipeline(model_id, "tts") as pipe:
+            result = pipe.generate(text)
+        return SpeechResult(samples=_speech_samples(result), sample_rate=_TTS_SR)
 
     def video_generate(
         self,
