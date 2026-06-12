@@ -18,7 +18,12 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from . import config, npu, registry
-from .errors import InvalidImage, PipelineNotImplemented, UnsupportedModel
+from .errors import (
+    InvalidAudio,
+    InvalidImage,
+    PipelineNotImplemented,
+    UnsupportedModel,
+)
 
 _IMAGE_PART_TYPES = {"image_url", "input_image"}
 _QUEUE_END = object()
@@ -220,6 +225,49 @@ def _decode_mask_tensor(raw: bytes) -> Any:
         edit = np.array(pic.convert("L"))  # white -> repaint
     rgb = np.repeat(edit[..., np.newaxis], 3, axis=2).astype(np.uint8)
     return ov.Tensor(rgb[np.newaxis, ...])
+
+
+_TARGET_SR = 16000
+
+
+def _decode_audio(raw: bytes) -> Any:
+    """Decode uploaded audio bytes into a mono 16 kHz float32 numpy array.
+
+    og.WhisperPipeline.generate wants raw speech normalized to ~[-1, 1] at
+    16 kHz. PyAV (vendored ffmpeg) decodes any container/codec ffmpeg supports
+    (wav/mp3/m4a/webm/flac/ogg/opus) in-process; an AudioResampler converts each
+    decoded frame to mono float ('flt' is already in [-1, 1]) at 16 kHz, and the
+    frames are concatenated. Broken/unsupported input raises InvalidAudio (400).
+    """
+    import io
+
+    import av
+    import numpy as np
+
+    try:
+        container = av.open(io.BytesIO(raw))
+    except (av.error.FFmpegError, OSError, ValueError) as exc:
+        raise InvalidAudio(f"could not open audio: {exc}") from exc
+    try:
+        if not container.streams.audio:
+            raise InvalidAudio("file has no audio stream")
+        stream = container.streams.audio[0]
+        resampler = av.AudioResampler(format="flt", layout="mono", rate=_TARGET_SR)
+        chunks: list[np.ndarray] = []
+        for frame in container.decode(stream):
+            for resampled in resampler.resample(frame):
+                chunks.append(resampled.to_ndarray().reshape(-1))
+        for resampled in resampler.resample(None):  # flush the resampler tail
+            chunks.append(resampled.to_ndarray().reshape(-1))
+    except InvalidAudio:
+        raise
+    except (av.error.FFmpegError, OSError, ValueError) as exc:
+        raise InvalidAudio(f"could not decode audio: {exc}") from exc
+    finally:
+        container.close()
+    if not chunks:
+        raise InvalidAudio("audio file contains no decodable samples")
+    return np.concatenate(chunks).astype(np.float32)
 
 
 def _encode_pngs(tensor: Any) -> list[bytes]:
