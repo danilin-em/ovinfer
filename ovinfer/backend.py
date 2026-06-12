@@ -155,22 +155,39 @@ def _fetch_image_bytes(url: str) -> bytes:
     raise InvalidImage(f"unsupported image URL scheme: {url[:32]!r}")
 
 
-def _load_image_tensor(url: str) -> Any:
-    """Fetch and decode an image URL into an ov.Tensor (uint8 RGB, HWC)."""
+def _decode_image_tensor(raw: bytes, *, batched: bool = False) -> Any:
+    """Decode raw image bytes into an ov.Tensor (uint8 RGB).
+
+    pic.load() forces a full decode now so truncated/broken data raises here,
+    not lazily downstream. Shared by the VLM path (via _load_image_tensor, after
+    a URL fetch) and the image-edit path (raw multipart upload bytes).
+
+    Returns a 3D HWC tensor by default (what og.VLMPipeline takes per image).
+    With batched=True, returns a 4D NHWC (1,H,W,3) tensor: og.Image2ImagePipeline
+    feeds the image to a model whose input is 4D ([?,?,?,?]) and rejects a bare
+    3D tensor.
+    """
     import io
 
     import numpy as np
     import openvino as ov
     from PIL import Image, UnidentifiedImageError
 
-    raw = _fetch_image_bytes(url)
     try:
         pic = Image.open(io.BytesIO(raw))
         pic.load()  # force decode now: truncated/broken data raises OSError here
         pic = pic.convert("RGB")
     except (UnidentifiedImageError, OSError) as exc:
         raise InvalidImage(f"could not decode image: {exc}") from exc
-    return ov.Tensor(np.array(pic))
+    arr = np.array(pic)
+    if batched:
+        arr = arr[np.newaxis, ...]
+    return ov.Tensor(arr)
+
+
+def _load_image_tensor(url: str) -> Any:
+    """Fetch and decode an image URL into an ov.Tensor (uint8 RGB, HWC)."""
+    return _decode_image_tensor(_fetch_image_bytes(url))
 
 
 def _encode_pngs(tensor: Any) -> list[bytes]:
@@ -322,6 +339,8 @@ class Backend:
             return og.TextRerankPipeline(model_dir, device, cfg)
         if kind == "text2image":
             return og.Text2ImagePipeline(model_dir, device)
+        if kind == "image2image":
+            return og.Image2ImagePipeline(model_dir, device)
         raise ValueError(f"Unknown pipeline kind: {kind!r}")
 
     # -- chat ------------------------------------------------------------------
@@ -605,10 +624,7 @@ class Backend:
             tensor = pipe.generate(prompt, **kwargs)
         return ImageResult(images=_encode_pngs(tensor))
 
-    # -- not implemented in v0.1 (501 contract) ---------------------------------
-
-    def _resolve(self, model_id: str) -> Path:
-        return registry.resolve_model_dir(self.settings.models_root, model_id)
+    # -- image editing ------------------------------------------------------------
 
     def image_edit(
         self,
@@ -616,17 +632,62 @@ class Backend:
         prompt: str,
         image: bytes,
         mask: bytes | None,
+        *,
         n: int = 1,
-        size: str | None = None,
-        response_format: str = "b64_json",
-    ) -> dict:
-        self._resolve(model_id)
+        width: int | None = None,
+        height: int | None = None,
+        num_inference_steps: int | None = None,
+        guidance_scale: float | None = None,
+        negative_prompt: str | None = None,
+        strength: float | None = None,
+        seed: int | None = None,
+    ) -> ImageResult:
+        """Image-to-image editing via og.Image2ImagePipeline (no-mask branch).
+
+        Check order tracks the cost of each step: model resolution (404) first;
+        a non-empty mask is Inpainting (501, a separate pipeline) before any
+        diffusion work; the diffusion-model check (400) before the cheap input
+        decode (400); the input image is decoded before the expensive pipeline
+        build, so a broken upload 400s without loading the model. Only
+        explicitly-set diffusion params are forwarded, so og's own defaults
+        (including strength=0.8) are not clobbered; guidance_scale/strength=0.0
+        pass through (meaningful values for CFG-distilled / preserve-input runs).
+        """
+        model_dir = registry.resolve_model_dir(self.settings.models_root, model_id)
         if not mask:
             # Zero-length upload counts as "no mask" to avoid silently picking
             # the inpainting path with an empty mask tensor.
             mask = None
-        pipeline = "InpaintingPipeline" if mask is not None else "Image2ImagePipeline"
-        raise PipelineNotImplemented(pipeline)
+        if mask is not None:
+            raise PipelineNotImplemented("InpaintingPipeline")
+        if not registry.is_diffusion_model(model_dir):
+            raise UnsupportedModel(
+                f"model '{model_id}' is not a diffusion model and cannot edit images"
+            )
+        image_tensor = _decode_image_tensor(image, batched=True)
+        kwargs: dict[str, Any] = {"num_images_per_prompt": n}
+        if width is not None:
+            kwargs["width"] = width
+        if height is not None:
+            kwargs["height"] = height
+        if num_inference_steps is not None:
+            kwargs["num_inference_steps"] = num_inference_steps
+        if guidance_scale is not None:
+            kwargs["guidance_scale"] = guidance_scale
+        if negative_prompt is not None:
+            kwargs["negative_prompt"] = negative_prompt
+        if strength is not None:
+            kwargs["strength"] = strength
+        if seed is not None:
+            kwargs["rng_seed"] = seed
+        with self._pipeline(model_id, "image2image") as pipe:
+            tensor = pipe.generate(prompt, image_tensor, **kwargs)
+        return ImageResult(images=_encode_pngs(tensor))
+
+    # -- not implemented in v0.1 (501 contract) ---------------------------------
+
+    def _resolve(self, model_id: str) -> Path:
+        return registry.resolve_model_dir(self.settings.models_root, model_id)
 
     def transcribe(
         self,
