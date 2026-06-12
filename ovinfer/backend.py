@@ -190,6 +190,38 @@ def _load_image_tensor(url: str) -> Any:
     return _decode_image_tensor(_fetch_image_bytes(url))
 
 
+def _decode_mask_tensor(raw: bytes) -> Any:
+    """Decode an inpainting mask into an og mask_image tensor: 4D NHWC (1,H,W,3)
+    uint8 where white (255) marks the region to repaint, black (0) the region to
+    keep (og/diffusers convention).
+
+    Hybrid input handling: an OpenAI-style RGBA mask marks the edit region with
+    *transparent* pixels, so when an alpha channel is present it is used and
+    inverted (alpha 0 -> 255 white -> repaint). A mask without alpha is read as
+    plain luminance (white -> repaint), matching diffusers tutorials and simple
+    b/w masks. The single-channel edit map is broadcast to 3 channels so the
+    mask tensor matches the image tensor layout og's preprocessing expects.
+    """
+    import io
+
+    import numpy as np
+    import openvino as ov
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        pic = Image.open(io.BytesIO(raw))
+        pic.load()  # force decode now: truncated/broken data raises here
+    except (UnidentifiedImageError, OSError) as exc:
+        raise InvalidImage(f"could not decode mask: {exc}") from exc
+    if pic.mode in ("RGBA", "LA") or "transparency" in pic.info:
+        alpha = np.array(pic.convert("RGBA"))[..., 3]
+        edit = 255 - alpha          # transparent (alpha 0) -> white -> repaint
+    else:
+        edit = np.array(pic.convert("L"))  # white -> repaint
+    rgb = np.repeat(edit[..., np.newaxis], 3, axis=2).astype(np.uint8)
+    return ov.Tensor(rgb[np.newaxis, ...])
+
+
 def _encode_pngs(tensor: Any) -> list[bytes]:
     """Encode an og image tensor (uint8 RGB, (N,H,W,3) or (H,W,3)) as PNG bytes.
 

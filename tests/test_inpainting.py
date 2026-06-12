@@ -69,5 +69,48 @@ class PipelineKindTest(unittest.TestCase):
         )
 
 
+import numpy as np
+
+from ovinfer.backend import _decode_mask_tensor
+from ovinfer.errors import InvalidImage
+
+
+class DecodeMaskTensorTest(unittest.TestCase):
+    def test_rgba_transparent_region_becomes_white_edit(self):
+        from PIL import Image
+
+        # 4x4 RGBA: top-left 2x2 transparent (alpha 0 -> edit), rest opaque.
+        arr = np.zeros((4, 4, 4), dtype=np.uint8)
+        arr[..., 3] = 255            # opaque everywhere (keep)
+        arr[0:2, 0:2, 3] = 0         # top-left transparent (edit)
+        buf = io.BytesIO()
+        Image.fromarray(arr, "RGBA").save(buf, format="PNG")
+
+        out = np.asarray(_decode_mask_tensor(buf.getvalue()).data)
+        self.assertEqual(list(out.shape), [1, 4, 4, 3])
+        # transparent -> white (repaint); opaque -> black (keep).
+        self.assertTrue((out[0, 0:2, 0:2, :] == 255).all())
+        self.assertTrue((out[0, 2:, 2:, :] == 0).all())
+
+    def test_grayscale_mask_white_marks_repaint(self):
+        from PIL import Image
+
+        # 4x4 L: top-left 2x2 white (repaint), rest black (keep). No alpha ->
+        # luminance is used as-is (white -> repaint), not inverted.
+        arr = np.zeros((4, 4), dtype=np.uint8)
+        arr[0:2, 0:2] = 255
+        buf = io.BytesIO()
+        Image.fromarray(arr, "L").save(buf, format="PNG")
+
+        out = np.asarray(_decode_mask_tensor(buf.getvalue()).data)
+        self.assertEqual(list(out.shape), [1, 4, 4, 3])
+        self.assertTrue((out[0, 0:2, 0:2, :] == 255).all())
+        self.assertTrue((out[0, 2:, 2:, :] == 0).all())
+
+    def test_undecodable_mask_raises_invalid_image(self):
+        with self.assertRaises(InvalidImage):
+            _decode_mask_tensor(b"not an image")
+
+
 if __name__ == "__main__":
     unittest.main()
