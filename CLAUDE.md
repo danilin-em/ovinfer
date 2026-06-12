@@ -47,13 +47,25 @@ OpenVINO-кода — через `openvino-env <команда>` (см. глоб
   img2img-knob `strength` как опциональные Form-поля-расширения. Декод входа —
   общий с VLM хелпер `_decode_image_tensor`, но **img2img требует 4D NHWC
   `(1,H,W,3)`** (`batched=True`): у `og.Image2ImagePipeline` вход модели `[?,?,?,?]`
-  и голый 3D HWC отвергается (VLM-путь остаётся 3D). Непустой `mask` → 501
-  `InpaintingPipeline` (отдельная итерация); не-диффузионная модель → 400. Требует
+  и голый 3D HWC отвергается (VLM-путь остаётся 3D). Непустой `mask` → Inpainting (реализован, см. ниже); не-диффузионная модель → 400. Требует
   `vae_encoder` (пиксели входа → латент), в отличие от Text2Image. Приёмка
   end-to-end на `OpenVINO/LCM_Dreamshaper_v7-int8-ov` (4 шага, `strength=0.6`,
   512×512, CPU): img2img→200/PNG, `url`→data-URL, mask→501, non-diffusion→400.
   Спека: `docs/superpowers/specs/2026-06-11-image2image-design.md`; план:
   `docs/superpowers/plans/2026-06-12-image2image.md`.
+- **Inpainting реализован 2026-06-12**: `og.InpaintingPipeline` на
+  `POST /v1/images/edits` (ветка с непустым `mask`) — multipart-загрузка `image`
+  + `mask` + `prompt` отдаёт PNG (`b64_json`/data-URL); те же диффузионные
+  «ручки», что у Image2Image (включая `strength`). `generate(prompt, image,
+  mask_image, **kwargs)` — маска третьим позиционным тензором. Декод маски —
+  новый хелпер `_decode_mask_tensor` с **гибридной семантикой**: есть alpha
+  (OpenAI-SDK) → прозрачное = править (инверсия alpha); нет alpha → яркость как
+  og-маска (белое = править); форма `(1,H,W,3)`. Проверка `is_diffusion_model`
+  переехала выше развилки `mask`, поэтому не-диффузионная модель → 400 для обеих
+  веток edit (это отменяет прежний порядок «mask→501 над non-diffusion→400»).
+  Требует `vae_encoder`, как Image2Image. Спека:
+  `docs/superpowers/specs/2026-06-12-inpainting-design.md`; план:
+  `docs/superpowers/plans/2026-06-12-inpainting.md`.
 - Спека v0.1 (одобрена и реализована): `docs/superpowers/specs/2026-06-07-ovinfer-v0.1-design.md`.
 - Спека контракта (маппинг 11 og.*-пайплайнов на эндпоинты, схемы, ошибки, SSE):
   `docs/superpowers/specs/2026-06-06-openai-server-design.md`.
