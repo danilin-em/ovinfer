@@ -15,7 +15,7 @@ Pipeline-to-endpoint mapping (see docs/superpowers/specs/2026-06-06-openai-serve
     Image2ImagePipeline        -> POST /v1/images/edits              (implemented)
     InpaintingPipeline         -> POST /v1/images/edits (mask)       (implemented)
     WhisperPipeline            -> POST /v1/audio/transcriptions|translations (implemented)
-    Text2SpeechPipeline        -> POST /v1/audio/speech              (501)
+    Text2SpeechPipeline        -> POST /v1/audio/speech              (implemented)
     Text2VideoPipeline         -> POST /v1/videos                    (501)
 """
 
@@ -121,10 +121,12 @@ class SpeechRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     model: str
     input: str
+    # Accepted for OpenAI compatibility but ignored: SpeechT5 selects a voice via
+    # a speaker embedding, not a named voice; og's default speaker is used.
     voice: str | None = None
-    # Text2SpeechPipeline produces WAV; mp3 (OpenAI's default) would need
-    # transcoding, so wav is this server's default.
-    response_format: str = "wav"
+    # SpeechT5 outputs 16 kHz audio; the transport encodes it to the requested
+    # container/codec. Default mp3 matches OpenAI clients' default.
+    response_format: Literal["wav", "pcm", "mp3", "opus", "aac", "flac"] = "mp3"
 
 
 class VideoGenerationRequest(BaseModel):
@@ -618,8 +620,11 @@ def create_app(backend: Backend) -> FastAPI:
 
     @app.post("/v1/audio/speech")
     def audio_speech(req: SpeechRequest) -> Response:
-        wav = backend.speech(req.model, req.input, req.voice)
-        return Response(content=wav, media_type="audio/wav")
+        result = backend.speech(req.model, req.input, req.voice)
+        audio = _encode_speech(result.samples, result.sample_rate, req.response_format)
+        return Response(
+            content=audio, media_type=_TTS_MEDIA_TYPES[req.response_format]
+        )
 
     @app.post("/v1/videos")
     def videos(req: VideoGenerationRequest) -> Any:

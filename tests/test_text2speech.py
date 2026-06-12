@@ -250,3 +250,85 @@ class EncodeSpeechTest(unittest.TestCase):
         self.assertEqual(out[0], 0xFF)            # ADTS sync word (0xFFF...)
         self.assertEqual(out[1] & 0xF0, 0xF0)
         self.assertGreater(_decode_count(out), 0)
+
+
+from fastapi.testclient import TestClient
+
+from ovinfer.server import create_app
+
+MODEL = "org/tts"
+
+
+class _StubSpeechBackend:
+    """Duck-typed Backend for transport tests; records speech() calls."""
+
+    def __init__(self, result_or_exc) -> None:
+        self.result_or_exc = result_or_exc
+        self.calls: list[dict] = []
+
+    def speech(self, model_id, text, voice=None):
+        self.calls.append({"model_id": model_id, "text": text, "voice": voice})
+        if isinstance(self.result_or_exc, Exception):
+            raise self.result_or_exc
+        return self.result_or_exc
+
+
+def _speech_client(result_or_exc):
+    backend = _StubSpeechBackend(result_or_exc)
+    return TestClient(create_app(backend)), backend
+
+
+def _ok_speech():
+    s, sr = _sine(seconds=0.2)
+    return SpeechResult(samples=s, sample_rate=sr)
+
+
+class SpeechRouteTest(unittest.TestCase):
+    def test_default_format_is_mp3(self):
+        client, backend = _speech_client(_ok_speech())
+        resp = client.post("/v1/audio/speech", json={"model": MODEL, "input": "hello"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.headers["content-type"], "audio/mpeg")
+        self.assertGreater(len(resp.content), 0)
+        self.assertEqual(backend.calls[0]["text"], "hello")
+
+    def test_each_format_sets_content_type(self):
+        for fmt, ct in [
+            ("wav", "audio/wav"), ("pcm", "audio/pcm"), ("mp3", "audio/mpeg"),
+            ("opus", "audio/ogg"), ("aac", "audio/aac"), ("flac", "audio/flac"),
+        ]:
+            client, _ = _speech_client(_ok_speech())
+            resp = client.post(
+                "/v1/audio/speech",
+                json={"model": MODEL, "input": "hi", "response_format": fmt},
+            )
+            self.assertEqual(resp.status_code, 200, fmt)
+            self.assertEqual(resp.headers["content-type"], ct, fmt)
+            self.assertGreater(len(resp.content), 0, fmt)
+
+    def test_invalid_format_is_422(self):
+        client, _ = _speech_client(_ok_speech())
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"model": MODEL, "input": "hi", "response_format": "bogus"},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    def test_voice_is_forwarded_to_backend(self):
+        client, backend = _speech_client(_ok_speech())
+        client.post(
+            "/v1/audio/speech",
+            json={"model": MODEL, "input": "hi", "voice": "alloy"},
+        )
+        self.assertEqual(backend.calls[0]["voice"], "alloy")
+
+    def test_unsupported_model_maps_to_400(self):
+        client, _ = _speech_client(UnsupportedModel("not a tts model"))
+        resp = client.post("/v1/audio/speech", json={"model": MODEL, "input": "hi"})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["code"], "unsupported_model")
+
+    def test_model_not_found_maps_to_404(self):
+        client, _ = _speech_client(ModelNotFound("org/ghost", "/models"))
+        resp = client.post("/v1/audio/speech", json={"model": "org/ghost", "input": "hi"})
+        self.assertEqual(resp.status_code, 404)
