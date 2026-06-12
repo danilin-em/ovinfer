@@ -136,5 +136,145 @@ class DecodeAudioTest(unittest.TestCase):
             _decode_audio(out.getvalue())
 
 
+from ovinfer.backend import Backend, Segment, TranscriptionResult
+from ovinfer.errors import ModelNotFound, UnsupportedModel
+
+
+class _FakeChunk:
+    def __init__(self, start, end, text):
+        self.start_ts, self.end_ts, self.text = start, end, text
+
+
+class _FakeWhisperResult:
+    """Stands in for og.WhisperDecodedResults."""
+
+    texts = ["  hello world  "]
+    language = "<|en|>"
+    chunks = [_FakeChunk(0.0, 1.0, "hello"), _FakeChunk(1.0, 2.0, "world")]
+
+
+class _FakeWhisperPipe:
+    """Records generate(samples, **kwargs); returns a fixed fake result."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def generate(self, samples, **kwargs):
+        self.calls.append({"samples": samples, "kwargs": kwargs})
+        return _FakeWhisperResult()
+
+
+class _DispatchBackend(Backend):
+    """Real Backend with _pipeline stubbed; records (model_id, kind) requests."""
+
+    def __init__(self, models_root: Path, pipe: _FakeWhisperPipe) -> None:
+        super().__init__(models_root=models_root, default_device="CPU")
+        self._pipe = pipe
+        self.pipeline_requests: list[tuple[str, str]] = []
+
+    @contextmanager
+    def _pipeline(self, model_id, kind):
+        self.pipeline_requests.append((model_id, kind))
+        yield self._pipe
+
+
+class TranscribeDispatchTest(unittest.TestCase):
+    def test_requests_whisper_kind_and_strips_text(self):
+        root, model = _whisper_root()
+        pipe = _FakeWhisperPipe()
+        be = _DispatchBackend(root, pipe)
+        result = be.transcribe(model, _wav_bytes())
+        self.assertIsInstance(result, TranscriptionResult)
+        self.assertEqual(result.text, "hello world")  # stripped
+        self.assertEqual(result.language, "en")        # <|en|> -> en
+        self.assertIsNone(result.segments)             # json -> no timestamps
+        self.assertGreater(result.duration, 0.0)
+        self.assertEqual(be.pipeline_requests, [(model, "whisper")])
+
+    def test_transcribe_task_and_no_optional_kwargs(self):
+        root, model = _whisper_root()
+        pipe = _FakeWhisperPipe()
+        be = _DispatchBackend(root, pipe)
+        be.transcribe(model, _wav_bytes())
+        # Only task is set; language/initial_prompt/do_sample/return_timestamps absent.
+        self.assertEqual(pipe.calls[0]["kwargs"], {"task": "transcribe"})
+
+    def test_translate_sets_translate_task(self):
+        root, model = _whisper_root()
+        pipe = _FakeWhisperPipe()
+        be = _DispatchBackend(root, pipe)
+        be.translate(model, _wav_bytes())
+        self.assertEqual(pipe.calls[0]["kwargs"], {"task": "translate"})
+
+    def test_language_is_wrapped_in_tokens(self):
+        root, model = _whisper_root()
+        pipe = _FakeWhisperPipe()
+        be = _DispatchBackend(root, pipe)
+        be.transcribe(model, _wav_bytes(), language="ru")
+        self.assertEqual(pipe.calls[0]["kwargs"]["language"], "<|ru|>")
+
+    def test_prompt_becomes_initial_prompt(self):
+        root, model = _whisper_root()
+        pipe = _FakeWhisperPipe()
+        be = _DispatchBackend(root, pipe)
+        be.transcribe(model, _wav_bytes(), prompt="hi there")
+        self.assertEqual(pipe.calls[0]["kwargs"]["initial_prompt"], "hi there")
+
+    def test_temperature_above_zero_enables_sampling(self):
+        root, model = _whisper_root()
+        pipe = _FakeWhisperPipe()
+        be = _DispatchBackend(root, pipe)
+        be.transcribe(model, _wav_bytes(), temperature=0.7)
+        self.assertEqual(pipe.calls[0]["kwargs"]["do_sample"], True)
+        self.assertEqual(pipe.calls[0]["kwargs"]["temperature"], 0.7)
+
+    def test_temperature_zero_stays_greedy(self):
+        root, model = _whisper_root()
+        pipe = _FakeWhisperPipe()
+        be = _DispatchBackend(root, pipe)
+        be.transcribe(model, _wav_bytes(), temperature=0.0)
+        self.assertNotIn("do_sample", pipe.calls[0]["kwargs"])
+        self.assertNotIn("temperature", pipe.calls[0]["kwargs"])
+
+    def test_timestamp_format_requests_chunks_and_maps_segments(self):
+        root, model = _whisper_root()
+        pipe = _FakeWhisperPipe()
+        be = _DispatchBackend(root, pipe)
+        result = be.transcribe(model, _wav_bytes(), response_format="srt")
+        self.assertEqual(pipe.calls[0]["kwargs"]["return_timestamps"], True)
+        self.assertEqual(
+            result.segments,
+            [Segment(0.0, 1.0, "hello"), Segment(1.0, 2.0, "world")],
+        )
+
+    def test_plain_format_does_not_request_timestamps(self):
+        root, model = _whisper_root()
+        pipe = _FakeWhisperPipe()
+        be = _DispatchBackend(root, pipe)
+        be.transcribe(model, _wav_bytes(), response_format="text")
+        self.assertNotIn("return_timestamps", pipe.calls[0]["kwargs"])
+
+    def test_non_whisper_model_is_unsupported_without_pipeline(self):
+        root, model = _llm_root()
+        be = _DispatchBackend(root, _FakeWhisperPipe())
+        with self.assertRaises(UnsupportedModel):
+            be.transcribe(model, _wav_bytes())
+        self.assertEqual(be.pipeline_requests, [])
+
+    def test_garbage_audio_is_invalid_audio_without_pipeline(self):
+        root, model = _whisper_root()
+        be = _DispatchBackend(root, _FakeWhisperPipe())
+        with self.assertRaises(InvalidAudio):
+            be.transcribe(model, b"not audio")
+        self.assertEqual(be.pipeline_requests, [])
+
+    def test_unknown_model_404s_before_anything(self):
+        root, _ = _whisper_root()
+        be = _DispatchBackend(root, _FakeWhisperPipe())
+        with self.assertRaises(ModelNotFound):
+            be.transcribe("org/ghost", _wav_bytes())
+        self.assertEqual(be.pipeline_requests, [])
+
+
 if __name__ == "__main__":
     unittest.main()
