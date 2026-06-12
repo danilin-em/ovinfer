@@ -135,3 +135,22 @@ def is_whisper_model(model_dir: Path) -> bool:
     Returns False (not an error) for a nonexistent path.
     """
     return (model_dir / "openvino_encoder_model.xml").is_file()
+
+
+def is_tts_model(model_dir: Path) -> bool:
+    """True if the model dir holds a Text2Speech (SpeechT5) export.
+
+    SpeechT5 exports ship openvino_vocoder.xml (a separate neural vocoder)
+    alongside encoder/decoder/postnet; LLM, VLM, diffusion and Whisper exports
+    do not. POST /v1/audio/speech requires this marker; a model without it is
+    rejected with 400 rather than failing pipeline load.
+
+    A SpeechT5 export also carries openvino_encoder_model.xml (it is an
+    encoder-decoder model), so is_whisper_model() also matches it; dispatch is
+    disambiguated by endpoint, not by marker. og.Text2SpeechPipeline supports
+    only SpeechT5 — Kokoro/OuteTTS/Qwen-TTS exports lack a vocoder and are
+    rejected here (400), like a non-SD diffusion model at image generation.
+
+    Returns False (not an error) for a nonexistent path.
+    """
+    return (model_dir / "openvino_vocoder.xml").is_file()
