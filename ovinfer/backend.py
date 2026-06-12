@@ -373,6 +373,8 @@ class Backend:
             return og.Text2ImagePipeline(model_dir, device)
         if kind == "image2image":
             return og.Image2ImagePipeline(model_dir, device)
+        if kind == "inpainting":
+            return og.InpaintingPipeline(model_dir, device)
         raise ValueError(f"Unknown pipeline kind: {kind!r}")
 
     # -- chat ------------------------------------------------------------------
@@ -674,24 +676,25 @@ class Backend:
         strength: float | None = None,
         seed: int | None = None,
     ) -> ImageResult:
-        """Image-to-image editing via og.Image2ImagePipeline (no-mask branch).
+        """Image editing: Image2Image (no mask) or Inpainting (mask) via og.
 
         Check order tracks the cost of each step: model resolution (404) first;
-        a non-empty mask is Inpainting (501, a separate pipeline) before any
-        diffusion work; the diffusion-model check (400) before the cheap input
-        decode (400); the input image is decoded before the expensive pipeline
-        build, so a broken upload 400s without loading the model. Only
-        explicitly-set diffusion params are forwarded, so og's own defaults
-        (including strength=0.8) are not clobbered; guidance_scale/strength=0.0
-        pass through (meaningful values for CFG-distilled / preserve-input runs).
+        the diffusion-model check (400) covers both branches (Inpainting needs a
+        diffusion model too); the input image — and, for inpainting, the mask —
+        are decoded (cheap, 400 on bad bytes) before the expensive pipeline
+        build, so a broken upload 400s without loading the model. A non-empty
+        mask routes to og.InpaintingPipeline (mask_image is the third positional
+        arg); an empty (zero-length) mask upload counts as "no mask" ->
+        Image2Image. Only explicitly-set diffusion params are forwarded, so og's
+        own defaults (including strength=0.8) are not clobbered;
+        guidance_scale/strength=0.0 pass through (meaningful values for
+        CFG-distilled / preserve-input runs).
         """
         model_dir = registry.resolve_model_dir(self.settings.models_root, model_id)
         if not mask:
             # Zero-length upload counts as "no mask" to avoid silently picking
             # the inpainting path with an empty mask tensor.
             mask = None
-        if mask is not None:
-            raise PipelineNotImplemented("InpaintingPipeline")
         if not registry.is_diffusion_model(model_dir):
             raise UnsupportedModel(
                 f"model '{model_id}' is not a diffusion model and cannot edit images"
@@ -712,8 +715,13 @@ class Backend:
             kwargs["strength"] = strength
         if seed is not None:
             kwargs["rng_seed"] = seed
-        with self._pipeline(model_id, "image2image") as pipe:
-            tensor = pipe.generate(prompt, image_tensor, **kwargs)
+        if mask is not None:
+            mask_tensor = _decode_mask_tensor(mask)
+            with self._pipeline(model_id, "inpainting") as pipe:
+                tensor = pipe.generate(prompt, image_tensor, mask_tensor, **kwargs)
+        else:
+            with self._pipeline(model_id, "image2image") as pipe:
+                tensor = pipe.generate(prompt, image_tensor, **kwargs)
         return ImageResult(images=_encode_pngs(tensor))
 
     # -- not implemented in v0.1 (501 contract) ---------------------------------
