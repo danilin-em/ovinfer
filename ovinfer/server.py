@@ -13,7 +13,7 @@ Pipeline-to-endpoint mapping (see docs/superpowers/specs/2026-06-06-openai-serve
     TextRerankPipeline         -> POST /v1/rerank                    (implemented)
     Text2ImagePipeline         -> POST /v1/images/generations        (implemented)
     Image2ImagePipeline        -> POST /v1/images/edits              (implemented)
-    InpaintingPipeline         -> POST /v1/images/edits (mask)       (501)
+    InpaintingPipeline         -> POST /v1/images/edits (mask)       (implemented)
     WhisperPipeline            -> POST /v1/audio/transcriptions|translations (501)
     Text2SpeechPipeline        -> POST /v1/audio/speech              (501)
     Text2VideoPipeline         -> POST /v1/videos                    (501)

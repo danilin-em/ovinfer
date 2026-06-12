@@ -88,7 +88,7 @@ class DecodeImageTensorTest(unittest.TestCase):
 import numpy as np
 
 from ovinfer.backend import Backend, ImageResult
-from ovinfer.errors import ModelNotFound, PipelineNotImplemented, UnsupportedModel
+from ovinfer.errors import ModelNotFound, UnsupportedModel
 
 
 class _FakeI2IPipe:
@@ -170,14 +170,6 @@ class ImageEditDispatchTest(unittest.TestCase):
         be.image_edit(model, "x", _png_bytes(), b"")  # zero-length mask upload
         self.assertEqual(be.pipeline_requests, [(model, "image2image")])
 
-    def test_non_empty_mask_is_501_inpainting_without_building_pipeline(self):
-        root, model = _diffusion_root()
-        be = _DispatchBackend(root, _FakeI2IPipe())
-        with self.assertRaises(PipelineNotImplemented) as ctx:
-            be.image_edit(model, "x", _png_bytes(), b"\x89PNG-mask")
-        self.assertEqual(ctx.exception.pipeline, "InpaintingPipeline")
-        self.assertEqual(be.pipeline_requests, [])
-
     def test_non_diffusion_model_is_unsupported_without_building_pipeline(self):
         root, model = _llm_root()
         be = _DispatchBackend(root, _FakeI2IPipe())
@@ -195,17 +187,19 @@ class ImageEditDispatchTest(unittest.TestCase):
     def test_unknown_model_404s_before_anything_else(self):
         root, _ = _diffusion_root()
         be = _DispatchBackend(root, _FakeI2IPipe())
-        # Non-empty mask too: model resolution must win the 404 over the mask 501.
+        # Non-empty mask too: model resolution must win the 404 over the
+        # mask/diffusion checks.
         with self.assertRaises(ModelNotFound):
             be.image_edit("org/ghost", "x", _png_bytes(), b"mask")
         self.assertEqual(be.pipeline_requests, [])
 
-    def test_mask_beats_non_diffusion_model(self):
-        # A non-empty mask is always Inpainting (501): the mask check precedes
-        # the diffusion check, so a mask on a non-diffusion model is 501, not 400.
+    def test_non_diffusion_model_is_unsupported_even_with_mask(self):
+        # The diffusion check precedes the mask split: a mask on a non-diffusion
+        # model is 400 UnsupportedModel (Inpainting needs a diffusion model too),
+        # not 501.
         root, model = _llm_root()
         be = _DispatchBackend(root, _FakeI2IPipe())
-        with self.assertRaises(PipelineNotImplemented):
+        with self.assertRaises(UnsupportedModel):
             be.image_edit(model, "x", _png_bytes(), b"mask")
         self.assertEqual(be.pipeline_requests, [])
 
@@ -324,15 +318,6 @@ class ImagesEditsRouteTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["error"]["code"], "invalid_size")
         self.assertEqual(backend.calls, [])
-
-    def test_non_empty_mask_returns_501(self):
-        client, _ = _edit_client(PipelineNotImplemented("InpaintingPipeline"))
-        resp = self._post(client, files={
-            "image": ("in.png", _png_bytes(), "image/png"),
-            "mask": ("m.png", b"mask-bytes", "image/png"),
-        })
-        self.assertEqual(resp.status_code, 501)
-        self.assertEqual(resp.json()["error"]["code"], "pipeline_not_implemented")
 
     def test_invalid_image_returns_400(self):
         # Upload-decoding failures (InvalidImage) surface as 400 at the route.
