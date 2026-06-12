@@ -73,8 +73,16 @@ OpenVINO-кода — через `openvino-env <команда>` (см. глоб
 - Нюанс этой машины: реальное дерево моделей —
   `~/.openvino/models/huggingface.co/<org>/<model>` (три уровня), поэтому
   `OVINFER_MODELS_ROOT=~/.openvino/models/huggingface.co`.
+- **Whisper (ASR) спланирован 2026-06-12**: `og.WhisperPipeline` на `POST
+  /v1/audio/transcriptions|translations` (batch) — заполняет готовые стабы
+  `backend.transcribe`/`translate`. Декод аудио через PyAV (`av`) в моно 16 кГц
+  float; пять `response_format` (json/text/verbose_json/srt/vtt); маркер модели
+  `openvino_encoder_model.xml` (`is_whisper_model`), non-whisper → 400. Спека:
+  `docs/superpowers/specs/2026-06-12-whisper-design.md` (план — следующим шагом).
 - Следующие шаги: follow-up в `~/.openvino` (см. спеку, раздел «Связь с
-  ~/.openvino»); спека каталога моделей v0.2.
+  ~/.openvino»); спека каталога моделей v0.2; аудио-follow-up'ы — стриминг
+  ответа (`stream:true`) и realtime-вход (WebSocket): планы в
+  `docs/superpowers/follow-ups/audio-streaming-and-realtime.md`.
 
 ## Язык
 
