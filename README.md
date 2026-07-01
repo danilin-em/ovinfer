@@ -1,10 +1,20 @@
 # ovinfer
 
-Self-contained OpenVINO GenAI inference server with an OpenAI-compatible API.
+Self-contained [OpenVINO GenAI](https://github.com/openvinotoolkit/openvino.genai)
+inference server with an OpenAI-compatible API.
 
 v0.1 implements LLM chat (streaming and non-streaming), text embeddings, and
 text rerank (`POST /v1/rerank`, Jina-style response); the remaining endpoints
 of the contract respond 501 until their pipelines land.
+
+## Prerequisites
+
+- [OpenVINO GenAI](https://github.com/openvinotoolkit/openvino.genai) runtime
+  (`openvino-genai` Python package) — see the
+  [installation guide](https://docs.openvino.ai/2025/get-started/install-openvino/install-openvino-genai.html).
+- Pre-converted [OpenVINO IR](https://docs.openvino.ai/2025/documentation/openvino-ir-format.html)
+  model directories. Ready-to-use models are available on the
+  [OpenVINO organisation on Hugging Face](https://huggingface.co/OpenVINO).
 
 ## Install & run
 
@@ -29,8 +39,9 @@ CLI arguments > `OVINFER_*` environment variables > defaults.
 | Pipeline cache size | — | `OVINFER_MAX_PIPELINES` | `max(2, len(preload))` |
 | Continuous batching | — | `OVINFER_USE_CONTINUOUS_BATCHING` | `0` (the CB path answers 501 in v0.1) |
 
-Models live as `<models-root>/<org>/<model>` OpenVINO IR directories; the
-OpenAI `model` field is the `org/model` relative path.
+Models live as `<models-root>/<org>/<model>`
+[OpenVINO IR](https://docs.openvino.ai/2025/documentation/openvino-ir-format.html)
+directories; the OpenAI `model` field is the `org/model` relative path.
 
 ## Example
 
@@ -40,6 +51,9 @@ ovinfer server \
   --device-map "OpenVINO/gemma-3-4b-it-int4-cw-ov=NPU" \
   --preload "OpenVINO/qwen2.5-14b-instruct-int4-ov,OpenVINO/Qwen3-Embedding-0.6B-int8-ov:embedding"
 ```
+
+Models such as `OpenVINO/qwen2.5-14b-instruct-int4-ov` can be downloaded from the
+[OpenVINO organisation on Hugging Face](https://huggingface.co/OpenVINO).
 
 Any OpenAI client works:
 
