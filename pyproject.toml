@@ -1,0 +1,21 @@
+[project]
+name = "ovinfer"
+version = "0.1.0"
+description = "Self-contained OpenVINO GenAI inference server with an OpenAI-compatible API"
+requires-python = ">=3.12"
+dependencies = [
+    "openvino==2026.2.0",
+    "openvino-genai==2026.2.0",
+    "fastapi",
+    "uvicorn",
+    "python-multipart",
+    "pillow>=12.2.0",
+    "av>=17.1.0",
+]
+
+[project.scripts]
+ovinfer = "ovinfer.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
