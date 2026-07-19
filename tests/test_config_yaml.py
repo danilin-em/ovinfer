@@ -92,6 +92,22 @@ class LoadConfigFileTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             config.load_config_file(_write("default_device:\n"))
 
+    def test_empty_string_models_root_raises(self):
+        with self.assertRaises(ConfigError):
+            config.load_config_file(_write('models_root: ""\n'))
+
+    def test_empty_string_default_device_raises(self):
+        with self.assertRaises(ConfigError):
+            config.load_config_file(_write('default_device: ""\n'))
+
+    def test_non_scalar_device_raises(self):
+        with self.assertRaises(ConfigError):
+            config.load_config_file(_write("device_map:\n  org/a:\n    x: y\n"))
+
+    def test_non_scalar_models_root_raises(self):
+        with self.assertRaises(ConfigError):
+            config.load_config_file(_write("models_root:\n  x: y\n"))
+
 
 class ResolveConfigPathTest(unittest.TestCase):
     def test_cli_beats_env(self):
@@ -183,6 +199,21 @@ class LoadSettingsPrecedenceTest(unittest.TestCase):
         ):
             s = config.load_settings(config_file=path)
         self.assertIs(s.use_continuous_batching, False)
+
+    def test_env_max_pipelines_overrides_file(self):
+        path = _write("max_pipelines: 2\n")
+        with mock.patch.dict(os.environ, {"OVINFER_MAX_PIPELINES": "7"}, clear=True):
+            s = config.load_settings(config_file=path)
+        self.assertEqual(s.max_pipelines, 7)
+
+    def test_file_preload_exceeding_file_max_pipelines_raises(self):
+        path = _write(
+            "max_pipelines: 1\n"
+            "preload:\n  org/a: llm\n  org/b: embedding\n"
+        )
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(ConfigError):
+                config.load_settings(config_file=path)
 
 
 class BackendConfigFileTest(unittest.TestCase):

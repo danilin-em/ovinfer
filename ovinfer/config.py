@@ -92,6 +92,10 @@ def _file_device_map(raw: object) -> dict[str, str]:
     out: dict[str, str] = {}
     for model_id, device in raw.items():
         model_id = str(model_id).strip()
+        if isinstance(device, (dict, list)):
+            raise ConfigError(
+                f"invalid device_map entry {model_id!r}: device must be a scalar"
+            )
         device = str(device).strip() if device is not None else ""
         if not model_id or not device:
             raise ConfigError(
@@ -145,13 +149,15 @@ def load_config_file(path: str | Path) -> dict:
         raise ConfigError(f"unknown config keys: {sorted(unknown)}")
     cfg: dict = {}
     if "models_root" in raw:
-        if raw["models_root"] is None:
-            raise ConfigError("models_root must not be empty")
-        cfg["models_root"] = str(raw["models_root"])
+        value = raw["models_root"]
+        if value is None or isinstance(value, (dict, list)) or not str(value).strip():
+            raise ConfigError("models_root must be a non-empty scalar")
+        cfg["models_root"] = str(value).strip()
     if "default_device" in raw:
-        if raw["default_device"] is None:
-            raise ConfigError("default_device must not be empty")
-        cfg["default_device"] = str(raw["default_device"])
+        value = raw["default_device"]
+        if value is None or isinstance(value, (dict, list)) or not str(value).strip():
+            raise ConfigError("default_device must be a non-empty scalar")
+        cfg["default_device"] = str(value).strip()
     if "device_map" in raw:
         cfg["device_map"] = _file_device_map(raw["device_map"])
     if "preload" in raw:
