@@ -8,6 +8,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 from .errors import ConfigError
 
 _ENV_PREFIX = "OVINFER_"
@@ -59,6 +61,110 @@ def parse_preload(raw: str) -> list[tuple[str, str]]:
             )
         entries.append((model_id.strip(), kind))
     return entries
+
+
+_FILE_KEYS = frozenset(
+    (
+        "models_root",
+        "default_device",
+        "device_map",
+        "preload",
+        "max_pipelines",
+        "use_continuous_batching",
+    )
+)
+
+
+def resolve_config_path(cli_path: str | Path | None) -> Path | None:
+    """Config file path: --config CLI value > OVINFER_CONFIG env > None."""
+    if cli_path is not None:
+        return Path(cli_path).expanduser()
+    env_path = os.environ.get(_ENV_PREFIX + "CONFIG")
+    return Path(env_path).expanduser() if env_path else None
+
+
+def _file_device_map(raw: object) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        raise ConfigError(
+            f"device_map must be a mapping model_id: device, "
+            f"got {type(raw).__name__}"
+        )
+    out: dict[str, str] = {}
+    for model_id, device in raw.items():
+        model_id = str(model_id).strip()
+        device = str(device).strip() if device is not None else ""
+        if not model_id or not device:
+            raise ConfigError(
+                f"invalid device_map entry {model_id!r}: {device!r} "
+                "(model and device required)"
+            )
+        out[model_id] = device
+    return out
+
+
+def _file_preload(raw: object) -> list[tuple[str, str]]:
+    if not isinstance(raw, dict):
+        raise ConfigError(
+            f"preload must be a mapping model_id: kind, got {type(raw).__name__}"
+        )
+    out: list[tuple[str, str]] = []
+    for model_id, kind in raw.items():
+        model_id = str(model_id).strip()
+        kind = str(kind).strip() if kind is not None else ""
+        if not model_id or kind not in PIPELINE_KINDS:
+            raise ConfigError(
+                f"invalid preload entry {model_id!r}: {kind!r} "
+                f"(kind one of {PIPELINE_KINDS})"
+            )
+        out.append((model_id, kind))
+    return out
+
+
+def load_config_file(path: str | Path) -> dict:
+    """Parse and validate a YAML config file into internal setting types.
+
+    Returns a dict whose keys are a subset of _FILE_KEYS. Raises ConfigError
+    on a missing file, malformed YAML, an unknown key, or an invalid value.
+    """
+    p = Path(path).expanduser()
+    if not p.is_file():
+        raise ConfigError(f"config file not found: {p}")
+    try:
+        raw = yaml.safe_load(p.read_text())
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"invalid YAML in {p}: {exc}") from None
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError(
+            f"config file {p} must be a mapping at top level, "
+            f"got {type(raw).__name__}"
+        )
+    unknown = set(raw) - _FILE_KEYS
+    if unknown:
+        raise ConfigError(f"unknown config keys: {sorted(unknown)}")
+    cfg: dict = {}
+    if "models_root" in raw:
+        cfg["models_root"] = str(raw["models_root"])
+    if "default_device" in raw:
+        cfg["default_device"] = str(raw["default_device"])
+    if "device_map" in raw:
+        cfg["device_map"] = _file_device_map(raw["device_map"])
+    if "preload" in raw:
+        cfg["preload"] = _file_preload(raw["preload"])
+    if "max_pipelines" in raw:
+        mp = raw["max_pipelines"]
+        if isinstance(mp, bool) or not isinstance(mp, int):
+            raise ConfigError(f"max_pipelines must be an integer, got {mp!r}")
+        cfg["max_pipelines"] = mp
+    if "use_continuous_batching" in raw:
+        cb = raw["use_continuous_batching"]
+        if not isinstance(cb, bool):
+            raise ConfigError(
+                f"use_continuous_batching must be a boolean, got {cb!r}"
+            )
+        cfg["use_continuous_batching"] = cb
+    return cfg
 
 
 @dataclass(frozen=True)
