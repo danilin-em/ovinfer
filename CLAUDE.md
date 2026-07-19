@@ -72,8 +72,11 @@ path traversal); `embedding_pooling` picks CLS/mean/last-token from the model's
 own metadata rather than trusting og's CLS default.
 
 **Config resolution** (`ovinfer/config.py`): explicit CLI args > `OVINFER_*` env
-vars > defaults. `cli.py` passes `None` down to mean "not given here, fall
-through." The `OVINFER_` prefix avoids OpenVINO's own `OV_` variables.
+vars > YAML config file (`--config`/`OVINFER_CONFIG`, `load_config_file`) >
+defaults. `cli.py` passes `None` down to mean "not given here, fall through."
+The `OVINFER_` prefix avoids OpenVINO's own `OV_` variables. The file covers the
+six `Settings` fields; `device_map`/`preload` are native maps and `preload`
+requires an explicit `kind`.
 
 **NPU preflight** (`ovinfer/npu.py`): a warn-only heuristic that predicts known
 NPU failures (group-wise int4 LLMs, dynamic-shape embeddings) from on-disk

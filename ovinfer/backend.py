@@ -365,6 +365,7 @@ class Backend:
         preload: list[tuple[str, str]] | None = None,
         max_pipelines: int | None = None,
         use_continuous_batching: bool | None = None,
+        config_file: str | Path | None = None,
     ) -> None:
         self.settings = config.load_settings(
             models_root=models_root,
@@ -373,6 +374,7 @@ class Backend:
             preload=preload,
             max_pipelines=max_pipelines,
             use_continuous_batching=use_continuous_batching,
+            config_file=config_file,
         )
         self._cache: OrderedDict[tuple[str, str], _CacheEntry] = OrderedDict()
         self._cache_lock = threading.Lock()
