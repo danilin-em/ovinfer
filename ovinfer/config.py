@@ -86,7 +86,7 @@ def resolve_config_path(cli_path: str | Path | None) -> Path | None:
 def _file_device_map(raw: object) -> dict[str, str]:
     if not isinstance(raw, dict):
         raise ConfigError(
-            f"device_map must be a mapping model_id: device, "
+            "device_map must be a mapping model_id: device, "
             f"got {type(raw).__name__}"
         )
     out: dict[str, str] = {}
@@ -145,8 +145,12 @@ def load_config_file(path: str | Path) -> dict:
         raise ConfigError(f"unknown config keys: {sorted(unknown)}")
     cfg: dict = {}
     if "models_root" in raw:
+        if raw["models_root"] is None:
+            raise ConfigError("models_root must not be empty")
         cfg["models_root"] = str(raw["models_root"])
     if "default_device" in raw:
+        if raw["default_device"] is None:
+            raise ConfigError("default_device must not be empty")
         cfg["default_device"] = str(raw["default_device"])
     if "device_map" in raw:
         cfg["device_map"] = _file_device_map(raw["device_map"])

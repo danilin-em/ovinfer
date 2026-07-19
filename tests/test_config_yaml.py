@@ -84,6 +84,14 @@ class LoadConfigFileTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             config.load_config_file(_write("use_continuous_batching: 1\n"))
 
+    def test_null_models_root_raises(self):
+        with self.assertRaises(ConfigError):
+            config.load_config_file(_write("models_root:\n"))
+
+    def test_null_default_device_raises(self):
+        with self.assertRaises(ConfigError):
+            config.load_config_file(_write("default_device:\n"))
+
 
 class ResolveConfigPathTest(unittest.TestCase):
     def test_cli_beats_env(self):
