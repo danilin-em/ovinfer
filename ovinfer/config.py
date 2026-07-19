@@ -189,32 +189,60 @@ def load_settings(
     preload: list[tuple[str, str]] | None = None,
     max_pipelines: int | None = None,
     use_continuous_batching: bool | None = None,
+    config_file: str | Path | None = None,
 ) -> Settings:
-    """Resolve effective settings; raises ConfigError on invalid combinations."""
+    """Resolve effective settings; raises ConfigError on invalid combinations.
+
+    Per field, precedence is: explicit argument (CLI) > OVINFER_* env > YAML
+    config file > built-in default.
+    """
     env = os.environ
+    config_path = resolve_config_path(config_file)
+    file_cfg = load_config_file(config_path) if config_path is not None else {}
+
     if models_root is None:
-        models_root = env.get(_ENV_PREFIX + "MODELS_ROOT") or default_models_root()
-    if default_device is None:
-        default_device = env.get(_ENV_PREFIX + "DEVICE") or "CPU"
-    if device_map is None:
-        device_map = parse_device_map(env.get(_ENV_PREFIX + "DEVICE_MAP", ""))
-    if preload is None:
-        preload = parse_preload(env.get(_ENV_PREFIX + "PRELOAD", ""))
-    if use_continuous_batching is None:
-        use_continuous_batching = (
-            env.get(_ENV_PREFIX + "USE_CONTINUOUS_BATCHING", "0") == "1"
+        models_root = (
+            env.get(_ENV_PREFIX + "MODELS_ROOT")
+            or file_cfg.get("models_root")
+            or default_models_root()
         )
+    if default_device is None:
+        default_device = (
+            env.get(_ENV_PREFIX + "DEVICE")
+            or file_cfg.get("default_device")
+            or "CPU"
+        )
+    if device_map is None:
+        env_dm = env.get(_ENV_PREFIX + "DEVICE_MAP")
+        if env_dm is not None:
+            device_map = parse_device_map(env_dm)
+        else:
+            device_map = file_cfg.get("device_map", {})
+    if preload is None:
+        env_pre = env.get(_ENV_PREFIX + "PRELOAD")
+        if env_pre is not None:
+            preload = parse_preload(env_pre)
+        else:
+            preload = file_cfg.get("preload", [])
+    if use_continuous_batching is None:
+        env_cb = env.get(_ENV_PREFIX + "USE_CONTINUOUS_BATCHING")
+        if env_cb is not None:
+            use_continuous_batching = env_cb == "1"
+        else:
+            use_continuous_batching = file_cfg.get("use_continuous_batching", False)
     if max_pipelines is None:
         raw_max = env.get(_ENV_PREFIX + "MAX_PIPELINES")
-        if raw_max is None:
-            max_pipelines = max(2, len(preload))
-        else:
+        if raw_max is not None:
             try:
                 max_pipelines = int(raw_max)
             except ValueError:
                 raise ConfigError(
                     f"OVINFER_MAX_PIPELINES must be an integer, got {raw_max!r}"
                 ) from None
+        elif "max_pipelines" in file_cfg:
+            max_pipelines = file_cfg["max_pipelines"]
+        else:
+            max_pipelines = max(2, len(preload))
     if max_pipelines < 1:
         raise ConfigError(f"max_pipelines must be >= 1, got {max_pipelines}")
     if len(preload) > max_pipelines:

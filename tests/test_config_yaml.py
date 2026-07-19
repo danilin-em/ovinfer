@@ -109,5 +109,61 @@ class ResolveConfigPathTest(unittest.TestCase):
             self.assertIsNone(config.resolve_config_path(None))
 
 
+class LoadSettingsPrecedenceTest(unittest.TestCase):
+    def _clean_env(self):
+        return mock.patch.dict(os.environ, {}, clear=True)
+
+    def test_file_value_used_when_no_cli_no_env(self):
+        path = _write("default_device: GPU\n")
+        with self._clean_env():
+            s = config.load_settings(config_file=path)
+        self.assertEqual(s.default_device, "GPU")
+
+    def test_env_overrides_file(self):
+        path = _write("default_device: GPU\n")
+        with mock.patch.dict(os.environ, {"OVINFER_DEVICE": "NPU"}, clear=True):
+            s = config.load_settings(config_file=path)
+        self.assertEqual(s.default_device, "NPU")
+
+    def test_cli_overrides_env_and_file(self):
+        path = _write("default_device: GPU\n")
+        with mock.patch.dict(os.environ, {"OVINFER_DEVICE": "NPU"}, clear=True):
+            s = config.load_settings(default_device="CPU", config_file=path)
+        self.assertEqual(s.default_device, "CPU")
+
+    def test_default_used_when_absent_everywhere(self):
+        path = _write("default_device: GPU\n")  # unrelated key set
+        with self._clean_env():
+            s = config.load_settings(config_file=path)
+        self.assertEqual(s.models_root, config.default_models_root())
+
+    def test_file_device_map_and_preload_reach_settings(self):
+        path = _write(
+            "device_map:\n  org/a: NPU\n"
+            "preload:\n  org/a: embedding\n"
+            "max_pipelines: 3\n"
+        )
+        with self._clean_env():
+            s = config.load_settings(config_file=path)
+        self.assertEqual(s.device_map, {"org/a": "NPU"})
+        self.assertEqual(s.preload, [("org/a", "embedding")])
+        self.assertEqual(s.max_pipelines, 3)
+
+    def test_env_device_map_overrides_file_device_map(self):
+        path = _write("device_map:\n  org/a: NPU\n")
+        with mock.patch.dict(
+            os.environ, {"OVINFER_DEVICE_MAP": "org/b=GPU"}, clear=True
+        ):
+            s = config.load_settings(config_file=path)
+        self.assertEqual(s.device_map, {"org/b": "GPU"})
+
+    def test_no_config_file_matches_current_behavior(self):
+        with self._clean_env():
+            s = config.load_settings()
+        self.assertEqual(s.default_device, "CPU")
+        self.assertEqual(s.device_map, {})
+        self.assertEqual(s.preload, [])
+
+
 if __name__ == "__main__":
     unittest.main()
