@@ -185,5 +185,16 @@ class LoadSettingsPrecedenceTest(unittest.TestCase):
         self.assertIs(s.use_continuous_batching, False)
 
 
+class BackendConfigFileTest(unittest.TestCase):
+    def test_backend_reads_config_file(self):
+        from ovinfer.backend import Backend
+
+        path = _write("default_device: GPU\nmax_pipelines: 5\n")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            backend = Backend(config_file=path)
+        self.assertEqual(backend.settings.default_device, "GPU")
+        self.assertEqual(backend.settings.max_pipelines, 5)
+
+
 if __name__ == "__main__":
     unittest.main()
