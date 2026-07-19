@@ -56,6 +56,10 @@ def main(argv: list[str] | None = None) -> None:
         "--models-root", default=None, metavar="PATH",
         help="models directory (org/model layout)",
     )
+    server.add_argument(
+        "--config", default=None, metavar="PATH",
+        help="YAML config file (settings baseline; env and CLI override it)",
+    )
 
     args = parser.parse_args(argv)
     if args.command == "server":
@@ -82,6 +86,7 @@ def _run_server(args: argparse.Namespace) -> None:
             preload=(
                 parse_preload(args.preload) if args.preload is not None else None
             ),
+            config_file=args.config,
         )
         backend.preload_models()
     except OvinferError as exc:

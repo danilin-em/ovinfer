@@ -30,16 +30,31 @@ such as [openvino-env](https://github.com/danilin-em/openvino-env)
 
 ## Configuration
 
-CLI arguments > `OVINFER_*` environment variables > defaults.
+CLI arguments > `OVINFER_*` environment variables > YAML config file > defaults.
 
 | Setting | CLI | Env | Default |
 |---|---|---|---|
 | Models directory | `--models-root` | `OVINFER_MODELS_ROOT` | `$XDG_DATA_HOME/ovinfer/models` |
+| Config file | `--config PATH` | `OVINFER_CONFIG` | none |
 | Default device | `--device` | `OVINFER_DEVICE` | `CPU` |
 | Per-model devices | `--device-map MODEL=DEV[,...]` | `OVINFER_DEVICE_MAP` | empty |
 | Warm-up models | `--preload MODEL[:KIND][,...]` | `OVINFER_PRELOAD` | empty |
 | Pipeline cache size | — | `OVINFER_MAX_PIPELINES` | `max(2, len(preload))` |
 | Continuous batching | — | `OVINFER_USE_CONTINUOUS_BATCHING` | `0` (the CB path answers 501 in v0.1) |
+
+A YAML config file supplies the same settings as a readable baseline; env vars
+and CLI flags override it. Point at it with `--config PATH` or `OVINFER_CONFIG`:
+
+```yaml
+default_device: CPU
+device_map:
+  OpenVINO/gemma-3-4b-it-int4-cw-ov: NPU
+preload:
+  OpenVINO/qwen2.5-14b-instruct-int4-ov: llm
+  OpenVINO/Qwen3-Embedding-0.6B-int8-ov: embedding
+```
+
+`listen` (host:port) is not read from the file — pass `--listen` instead.
 
 Models live as `<models-root>/<org>/<model>`
 [OpenVINO IR](https://docs.openvino.ai/2025/documentation/openvino-ir-format.html)
