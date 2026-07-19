@@ -164,6 +164,26 @@ class LoadSettingsPrecedenceTest(unittest.TestCase):
         self.assertEqual(s.device_map, {})
         self.assertEqual(s.preload, [])
 
+    def test_empty_env_device_map_overrides_file(self):
+        path = _write("device_map:\n  org/a: NPU\n")
+        with mock.patch.dict(os.environ, {"OVINFER_DEVICE_MAP": ""}, clear=True):
+            s = config.load_settings(config_file=path)
+        self.assertEqual(s.device_map, {})
+
+    def test_empty_env_preload_overrides_file(self):
+        path = _write("preload:\n  org/a: embedding\n")
+        with mock.patch.dict(os.environ, {"OVINFER_PRELOAD": ""}, clear=True):
+            s = config.load_settings(config_file=path)
+        self.assertEqual(s.preload, [])
+
+    def test_empty_env_continuous_batching_overrides_file(self):
+        path = _write("use_continuous_batching: true\n")
+        with mock.patch.dict(
+            os.environ, {"OVINFER_USE_CONTINUOUS_BATCHING": ""}, clear=True
+        ):
+            s = config.load_settings(config_file=path)
+        self.assertIs(s.use_continuous_batching, False)
+
 
 if __name__ == "__main__":
     unittest.main()
