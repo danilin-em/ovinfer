@@ -4,6 +4,8 @@ main() parses argv then calls _run_server; we patch _run_server to capture
 the parsed Namespace without importing uvicorn or building a Backend.
 """
 
+import contextlib
+import io
 import unittest
 from unittest import mock
 
@@ -27,11 +29,11 @@ class CliAutoloadTest(unittest.TestCase):
         self.assertIsNone(self._autoload(["server"]))
 
     def test_device_map_flag_removed(self):
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             cli.main(["server", "--device-map", "org/a=NPU"])
 
     def test_preload_flag_removed(self):
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             cli.main(["server", "--preload", "org/a:llm"])
 
 

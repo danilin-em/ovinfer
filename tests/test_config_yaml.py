@@ -154,6 +154,18 @@ class LoadConfigFileTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             config.load_config_file(_write('default_device: ""\n'))
 
+    def test_null_default_device_raises(self):
+        with self.assertRaises(ConfigError):
+            config.load_config_file(_write("default_device:\n"))
+
+    def test_empty_string_models_root_raises(self):
+        with self.assertRaises(ConfigError):
+            config.load_config_file(_write('models_root: ""\n'))
+
+    def test_non_scalar_models_root_raises(self):
+        with self.assertRaises(ConfigError):
+            config.load_config_file(_write("models_root:\n  x: y\n"))
+
 
 class ResolveConfigPathTest(unittest.TestCase):
     def test_cli_beats_env(self):
@@ -246,6 +258,26 @@ class LoadSettingsTest(unittest.TestCase):
         with self._clean_env():
             with self.assertRaises(ConfigError):
                 config.load_settings(config_file=path)
+
+    def test_env_overrides_file(self):
+        path = _write("default_device: GPU\n")
+        with mock.patch.dict(os.environ, {"OVINFER_DEVICE": "NPU"}, clear=True):
+            s = config.load_settings(config_file=path)
+        self.assertEqual(s.default_device, "NPU")
+
+    def test_default_used_when_absent_everywhere(self):
+        path = _write("default_device: GPU\n")  # unrelated key set
+        with self._clean_env():
+            s = config.load_settings(config_file=path)
+        self.assertEqual(s.models_root, config.default_models_root())
+
+    def test_empty_env_continuous_batching_overrides_file(self):
+        path = _write("use_continuous_batching: true\n")
+        with mock.patch.dict(
+            os.environ, {"OVINFER_USE_CONTINUOUS_BATCHING": ""}, clear=True
+        ):
+            s = config.load_settings(config_file=path)
+        self.assertIs(s.use_continuous_batching, False)
 
 
 class BackendConfigFileTest(unittest.TestCase):
