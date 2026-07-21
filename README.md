@@ -37,21 +37,27 @@ CLI arguments > `OVINFER_*` environment variables > YAML config file > defaults.
 | Models directory | `--models-root` | `OVINFER_MODELS_ROOT` | `$XDG_DATA_HOME/ovinfer/models` |
 | Config file | `--config PATH` | `OVINFER_CONFIG` | none |
 | Default device | `--device` | `OVINFER_DEVICE` | `CPU` |
-| Per-model devices | `--device-map MODEL=DEV[,...]` | `OVINFER_DEVICE_MAP` | empty |
-| Warm-up models | `--preload MODEL[:KIND][,...]` | `OVINFER_PRELOAD` | empty |
-| Pipeline cache size | — | `OVINFER_MAX_PIPELINES` | `max(2, len(preload))` |
+| Autoload models on request | `--autoload` / `--no-autoload` | `OVINFER_AUTOLOAD` | `true` w/o a config file, else `false` |
+| Pipeline cache size | — | `OVINFER_MAX_PIPELINES` | `max(2, #preload)` |
 | Continuous batching | — | `OVINFER_USE_CONTINUOUS_BATCHING` | `0` (the CB path answers 501 in v0.1) |
+
+Per-model device, warm-up, and pipeline kind live in the file's `models:` map
+(there is no env/CLI form). When `autoload` is false the `models:` map is a
+request whitelist — an unlisted model returns 404 even if it is on disk.
 
 A YAML config file supplies the same settings as a readable baseline; env vars
 and CLI flags override it. Point at it with `--config PATH` or `OVINFER_CONFIG`:
 
 ```yaml
 default_device: CPU
-device_map:
-  OpenVINO/gemma-3-4b-it-int4-cw-ov: NPU
-preload:
-  OpenVINO/qwen2.5-14b-instruct-int4-ov: llm
-  OpenVINO/Qwen3-Embedding-0.6B-int8-ov: embedding
+autoload: false
+models:
+  OpenVINO/gemma-3-4b-it-int4-cw-ov:
+    kind: llm
+    device: NPU
+    preload: true
+  OpenVINO/Qwen3-Embedding-0.6B-int8-ov:
+    kind: embedding
 ```
 
 `listen` (host:port) is not read from the file — pass `--listen` instead.
@@ -63,10 +69,7 @@ directories; the OpenAI `model` field is the `org/model` relative path.
 ## Example
 
 ```bash
-ovinfer server \
-  --device GPU \
-  --device-map "OpenVINO/gemma-3-4b-it-int4-cw-ov=NPU" \
-  --preload "OpenVINO/qwen2.5-14b-instruct-int4-ov,OpenVINO/Qwen3-Embedding-0.6B-int8-ov:embedding"
+ovinfer server --device GPU --config ovinfer.yml
 ```
 
 Models such as `OpenVINO/qwen2.5-14b-instruct-int4-ov` can be downloaded from the

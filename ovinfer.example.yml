@@ -1,41 +1,50 @@
 # ovinfer configuration file — example.
 #
 # Point the server at this file with `--config PATH` or the OVINFER_CONFIG
-# env var. The file is a baseline: precedence, per field, is
+# env var. Precedence, per scalar field:
 #   CLI flag > OVINFER_* env var > this file > built-in default.
-# Every key is optional; omit a key to fall through to its default.
+# The `models:` map is file-only (no env/CLI form). Every key is optional.
 #
-# Covers the six settable fields only. The bind address (host:port) is NOT
-# read from here — pass `--listen HOST:PORT` (default 127.0.0.1:8000).
+# The bind address (host:port) is NOT read from here — pass
+# `--listen HOST:PORT` (default 127.0.0.1:8000).
 
 # Models directory (the <org>/<model> OpenVINO IR tree).
 # Default: $XDG_DATA_HOME/ovinfer/models (~/.local/share/ovinfer/models).
 models_root: /data/models
 
-# Default inference device for models without a device_map override.
+# Default inference device for models without a per-model override.
 # One of CPU / GPU / NPU. Default: CPU.
 default_device: CPU
-
-# Per-model device overrides — a map of `org/model: DEVICE`.
-# Default: empty (every model uses default_device).
-device_map:
-  OpenVINO/gemma-3-4b-it-int4-cw-ov: NPU
-  OpenVINO/qwen2.5-14b-instruct-int4-ov: GPU
-
-# Models to warm up at startup — a map of `org/model: kind`.
-# Unlike the env/CLI string form, `kind` is REQUIRED here (no default) and
-# must be one of: llm, vlm, embedding, rerank, text2image, image2image,
-# inpainting, whisper, tts. One kind per model.
-# Default: empty (nothing preloaded).
-preload:
-  OpenVINO/qwen2.5-14b-instruct-int4-ov: llm
-  OpenVINO/Qwen3-Embedding-0.6B-int8-ov: embedding
 
 # LRU pipeline cache size (how many loaded pipelines to keep resident).
 # Must be >= 1 and >= the number of preload entries.
 # Default: max(2, number of preload entries).
 max_pipelines: 4
 
-# Enable the continuous-batching code path (answers 501 in v0.1).
-# Default: false.
+# Enable the continuous-batching code path (answers 501 in v0.1). Default: false.
 use_continuous_batching: false
+
+# Allow loading any on-disk model on client request.
+# Default: false when this file is used, true when no config file is given.
+# false -> the `models:` map below is a request whitelist; an unlisted model
+#          returns 404, even if it exists on disk.
+# true  -> any on-disk model loads on demand; `models:` entries are overrides.
+autoload: false
+
+# Per-model config. Replaces the old `device_map` + `preload` keys.
+# `kind` is REQUIRED (one of: llm, vlm, embedding, rerank, text2image,
+# image2image, inpainting, whisper, tts). `device`, `preload`, `config` are
+# optional. `config:` is a reserved stub — parsed but ignored for now.
+models:
+  OpenVINO/qwen2.5-14b-instruct-int4-ov:
+    kind: llm
+    device: GPU
+    preload: true
+    config: {}
+
+  OpenVINO/Qwen3-Embedding-0.6B-int8-ov:
+    kind: embedding
+    device: NPU
+
+  OpenVINO/whisper-base:
+    kind: whisper
