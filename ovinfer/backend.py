@@ -21,6 +21,7 @@ from . import config, npu, registry
 from .errors import (
     InvalidAudio,
     InvalidImage,
+    ModelNotFound,
     PipelineNotImplemented,
     UnsupportedModel,
 )
@@ -380,6 +381,8 @@ class Backend:
     # -- registry ------------------------------------------------------------
 
     def list_models(self) -> list[str]:
+        if not self.settings.autoload:
+            return sorted(self.settings.models)
         return registry.list_models(self.settings.models_root)
 
     def model_created(self, model_id: str) -> int:
@@ -423,7 +426,7 @@ class Backend:
         requests to other models. A failed creation removes the entry from
         the cache: a permanently broken model must not pin an LRU slot.
         """
-        model_dir = registry.resolve_model_dir(self.settings.models_root, model_id)
+        model_dir = self._resolve(model_id)
         entry = self._entry(model_id, kind)
         with entry.lock:
             if entry.pipeline is None:
@@ -540,7 +543,7 @@ class Backend:
         501 (continuous batching) before the transport sends headers.
         """
         self._check_chat_supported()
-        model_dir = registry.resolve_model_dir(self.settings.models_root, model_id)
+        model_dir = self._resolve(model_id)
         if registry.is_vlm_model(model_dir):
             history, urls = _vlm_history(messages)
             images = [_load_image_tensor(url) for url in urls]
@@ -702,7 +705,7 @@ class Backend:
         """
         # Resolve first: a 404 must surface even when texts is empty
         # (no pipeline call follows).
-        registry.resolve_model_dir(self.settings.models_root, model_id)
+        self._resolve(model_id)
         if not texts:
             return RerankResult(results=[])
         with self._pipeline(model_id, "rerank") as pipe:
@@ -734,7 +737,7 @@ class Backend:
         are forwarded so og's own defaults are not clobbered; guidance_scale=0.0
         is forwarded (it is a meaningful value for CFG-distilled turbo models).
         """
-        model_dir = registry.resolve_model_dir(self.settings.models_root, model_id)
+        model_dir = self._resolve(model_id)
         if not registry.is_diffusion_model(model_dir):
             raise UnsupportedModel(
                 f"model '{model_id}' is not a diffusion model "
@@ -789,7 +792,7 @@ class Backend:
         guidance_scale/strength=0.0 pass through (meaningful values for
         CFG-distilled / preserve-input runs).
         """
-        model_dir = registry.resolve_model_dir(self.settings.models_root, model_id)
+        model_dir = self._resolve(model_id)
         if not mask:
             # Zero-length upload counts as "no mask" to avoid silently picking
             # the inpainting path with an empty mask tensor.
@@ -826,7 +829,20 @@ class Backend:
     # -- not implemented in v0.1 (501 contract) ---------------------------------
 
     def _resolve(self, model_id: str) -> Path:
+        """Resolve a model id to a dir, enforcing the autoload whitelist.
+
+        When autoload is off, only ids present in settings.models are reachable;
+        anything else 404s even if it exists on disk.
+        """
+        if not self.settings.autoload and model_id not in self.settings.models:
+            raise ModelNotFound(model_id, self.settings.models_root)
         return registry.resolve_model_dir(self.settings.models_root, model_id)
+
+    def validate_configured_models(self) -> None:
+        """Fail fast at startup if a configured model dir is missing (raw disk
+        check, bypassing the whitelist gate)."""
+        for model_id in self.settings.models:
+            registry.resolve_model_dir(self.settings.models_root, model_id)
 
     # -- audio transcription ------------------------------------------------------
 
@@ -882,7 +898,7 @@ class Backend:
         only explicitly-set params are forwarded. Timestamps (og chunks) are
         requested only for the formats that render them.
         """
-        model_dir = registry.resolve_model_dir(self.settings.models_root, model_id)
+        model_dir = self._resolve(model_id)
         if not registry.is_whisper_model(model_dir):
             raise UnsupportedModel(
                 f"model '{model_id}' is not a Whisper model "
@@ -926,7 +942,7 @@ class Backend:
         into the runtime, offline) is used. Returns transport-agnostic 16 kHz
         float32 samples; the transport encodes them to the requested format.
         """
-        model_dir = registry.resolve_model_dir(self.settings.models_root, model_id)
+        model_dir = self._resolve(model_id)
         if not registry.is_tts_model(model_dir):
             raise UnsupportedModel(
                 f"model '{model_id}' is not a Text2Speech (SpeechT5) model "
