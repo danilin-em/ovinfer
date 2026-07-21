@@ -45,20 +45,19 @@ def main(argv: list[str] | None = None) -> None:
         help="default inference device (CPU/GPU/NPU)",
     )
     server.add_argument(
-        "--device-map", default=None, metavar="MODEL=DEV[,...]",
-        help="per-model device overrides",
-    )
-    server.add_argument(
-        "--preload", default=None, metavar="MODEL[:KIND][,...]",
-        help="models to warm up at startup (kind: llm|vlm|embedding|rerank, default llm)",
-    )
-    server.add_argument(
         "--models-root", default=None, metavar="PATH",
         help="models directory (org/model layout)",
     )
     server.add_argument(
         "--config", default=None, metavar="PATH",
         help="YAML config file (settings baseline; env and CLI override it)",
+    )
+    server.add_argument(
+        "--autoload",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="allow loading any on-disk model on request "
+        "(--no-autoload restricts to models: in the config file)",
     )
 
     args = parser.parse_args(argv)
@@ -70,7 +69,6 @@ def _run_server(args: argparse.Namespace) -> None:
     import uvicorn
 
     from .backend import Backend
-    from .config import parse_device_map, parse_preload
     from .errors import OvinferError
     from .server import create_app
 
@@ -78,14 +76,7 @@ def _run_server(args: argparse.Namespace) -> None:
         backend = Backend(
             models_root=args.models_root,
             default_device=args.device,
-            device_map=(
-                parse_device_map(args.device_map)
-                if args.device_map is not None
-                else None
-            ),
-            preload=(
-                parse_preload(args.preload) if args.preload is not None else None
-            ),
+            autoload=args.autoload,
             config_file=args.config,
         )
         backend.preload_models()

@@ -361,19 +361,17 @@ class Backend:
         *,
         models_root: Path | str | None = None,
         default_device: str | None = None,
-        device_map: dict[str, str] | None = None,
-        preload: list[tuple[str, str]] | None = None,
         max_pipelines: int | None = None,
         use_continuous_batching: bool | None = None,
+        autoload: bool | None = None,
         config_file: str | Path | None = None,
     ) -> None:
         self.settings = config.load_settings(
             models_root=models_root,
             default_device=default_device,
-            device_map=device_map,
-            preload=preload,
             max_pipelines=max_pipelines,
             use_continuous_batching=use_continuous_batching,
+            autoload=autoload,
             config_file=config_file,
         )
         self._cache: OrderedDict[tuple[str, str], _CacheEntry] = OrderedDict()

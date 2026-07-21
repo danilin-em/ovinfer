@@ -5,7 +5,7 @@ OpenVINO's own environment variables.
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -24,6 +24,19 @@ PIPELINE_KINDS = (
     "whisper",
     "tts",
 )
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    """One per-model config entry from the file's `models:` map."""
+
+    kind: str                       # required; in PIPELINE_KINDS
+    device: str | None = None       # None -> default_device
+    preload: bool = False           # warm at startup
+    config: dict = field(default_factory=dict)   # reserved stub, ignored
+
+
+_MODEL_ENTRY_KEYS = frozenset(("kind", "device", "preload", "config"))
 
 
 def _xdg_data_home() -> Path:
@@ -67,10 +80,10 @@ _FILE_KEYS = frozenset(
     (
         "models_root",
         "default_device",
-        "device_map",
-        "preload",
         "max_pipelines",
         "use_continuous_batching",
+        "autoload",
+        "models",
     )
 )
 
@@ -83,44 +96,55 @@ def resolve_config_path(cli_path: str | Path | None) -> Path | None:
     return Path(env_path).expanduser() if env_path else None
 
 
-def _file_device_map(raw: object) -> dict[str, str]:
+def _file_models(raw: object) -> dict[str, "ModelConfig"]:
+    """Parse and validate the file's `models:` map into ModelConfig objects."""
     if not isinstance(raw, dict):
         raise ConfigError(
-            "device_map must be a mapping model_id: device, "
-            f"got {type(raw).__name__}"
+            f"models must be a mapping model_id: entry, got {type(raw).__name__}"
         )
-    out: dict[str, str] = {}
-    for model_id, device in raw.items():
+    out: dict[str, ModelConfig] = {}
+    for model_id, entry in raw.items():
         model_id = str(model_id).strip()
-        if isinstance(device, (dict, list)):
+        if not model_id:
+            raise ConfigError("models has an entry with an empty model id")
+        if not isinstance(entry, dict):
             raise ConfigError(
-                f"invalid device_map entry {model_id!r}: device must be a scalar"
+                f"models entry {model_id!r} must be a mapping, "
+                f"got {type(entry).__name__}"
             )
-        device = str(device).strip() if device is not None else ""
-        if not model_id or not device:
+        unknown = set(entry) - _MODEL_ENTRY_KEYS
+        if unknown:
             raise ConfigError(
-                f"invalid device_map entry {model_id!r}: {device!r} "
-                "(model and device required)"
+                f"models entry {model_id!r} has unknown keys: {sorted(unknown)}"
             )
-        out[model_id] = device
-    return out
-
-
-def _file_preload(raw: object) -> list[tuple[str, str]]:
-    if not isinstance(raw, dict):
-        raise ConfigError(
-            f"preload must be a mapping model_id: kind, got {type(raw).__name__}"
-        )
-    out: list[tuple[str, str]] = []
-    for model_id, kind in raw.items():
-        model_id = str(model_id).strip()
+        kind = entry.get("kind")
         kind = str(kind).strip() if kind is not None else ""
-        if not model_id or kind not in PIPELINE_KINDS:
+        if kind not in PIPELINE_KINDS:
             raise ConfigError(
-                f"invalid preload entry {model_id!r}: {kind!r} "
-                f"(kind one of {PIPELINE_KINDS})"
+                f"models entry {model_id!r}: kind is required and must be one of "
+                f"{PIPELINE_KINDS}, got {entry.get('kind')!r}"
             )
-        out.append((model_id, kind))
+        device = entry.get("device")
+        if "device" in entry:
+            if device is None or isinstance(device, (dict, list)) or not str(device).strip():
+                raise ConfigError(
+                    f"models entry {model_id!r}: device must be a non-empty scalar"
+                )
+            device = str(device).strip()
+        preload = entry.get("preload", False)
+        if not isinstance(preload, bool):
+            raise ConfigError(
+                f"models entry {model_id!r}: preload must be a boolean, got {preload!r}"
+            )
+        cfg = entry.get("config", {})
+        if not isinstance(cfg, dict):
+            raise ConfigError(
+                f"models entry {model_id!r}: config must be a mapping, "
+                f"got {type(cfg).__name__}"
+            )
+        out[model_id] = ModelConfig(
+            kind=kind, device=device, preload=preload, config=dict(cfg)
+        )
     return out
 
 
@@ -158,10 +182,6 @@ def load_config_file(path: str | Path) -> dict:
         if value is None or isinstance(value, (dict, list)) or not str(value).strip():
             raise ConfigError("default_device must be a non-empty scalar")
         cfg["default_device"] = str(value).strip()
-    if "device_map" in raw:
-        cfg["device_map"] = _file_device_map(raw["device_map"])
-    if "preload" in raw:
-        cfg["preload"] = _file_preload(raw["preload"])
     if "max_pipelines" in raw:
         mp = raw["max_pipelines"]
         if isinstance(mp, bool) or not isinstance(mp, int):
@@ -174,6 +194,13 @@ def load_config_file(path: str | Path) -> dict:
                 f"use_continuous_batching must be a boolean, got {cb!r}"
             )
         cfg["use_continuous_batching"] = cb
+    if "autoload" in raw:
+        al = raw["autoload"]
+        if not isinstance(al, bool):
+            raise ConfigError(f"autoload must be a boolean, got {al!r}")
+        cfg["autoload"] = al
+    if "models" in raw:
+        cfg["models"] = _file_models(raw["models"])
     return cfg
 
 
@@ -181,26 +208,28 @@ def load_config_file(path: str | Path) -> dict:
 class Settings:
     models_root: Path
     default_device: str
-    device_map: dict[str, str]
-    preload: list[tuple[str, str]]
     max_pipelines: int
     use_continuous_batching: bool
+    autoload: bool
+    models: dict[str, ModelConfig]
+    device_map: dict[str, str]          # derived from models
+    preload: list[tuple[str, str]]      # derived from models
 
 
 def load_settings(
     *,
     models_root: Path | str | None = None,
     default_device: str | None = None,
-    device_map: dict[str, str] | None = None,
-    preload: list[tuple[str, str]] | None = None,
     max_pipelines: int | None = None,
     use_continuous_batching: bool | None = None,
+    autoload: bool | None = None,
     config_file: str | Path | None = None,
 ) -> Settings:
     """Resolve effective settings; raises ConfigError on invalid combinations.
 
-    Per field, precedence is: explicit argument (CLI) > OVINFER_* env > YAML
-    config file > built-in default.
+    Per scalar field: explicit argument (CLI) > OVINFER_* env > YAML config file
+    > built-in default. The `models:` map is file-only; `device_map` and
+    `preload` are derived from it. `autoload` defaults to "no config file given".
     """
     env = os.environ
     config_path = resolve_config_path(config_file)
@@ -218,24 +247,25 @@ def load_settings(
             or file_cfg.get("default_device")
             or "CPU"
         )
-    if device_map is None:
-        env_dm = env.get(_ENV_PREFIX + "DEVICE_MAP")
-        if env_dm is not None:
-            device_map = parse_device_map(env_dm)
-        else:
-            device_map = file_cfg.get("device_map", {})
-    if preload is None:
-        env_pre = env.get(_ENV_PREFIX + "PRELOAD")
-        if env_pre is not None:
-            preload = parse_preload(env_pre)
-        else:
-            preload = file_cfg.get("preload", [])
     if use_continuous_batching is None:
         env_cb = env.get(_ENV_PREFIX + "USE_CONTINUOUS_BATCHING")
         if env_cb is not None:
             use_continuous_batching = env_cb == "1"
         else:
             use_continuous_batching = file_cfg.get("use_continuous_batching", False)
+    if autoload is None:
+        env_al = env.get(_ENV_PREFIX + "AUTOLOAD")
+        if env_al is not None:
+            autoload = env_al == "1"
+        elif "autoload" in file_cfg:
+            autoload = file_cfg["autoload"]
+        else:
+            autoload = config_path is None
+
+    models: dict[str, ModelConfig] = file_cfg.get("models", {})
+    device_map = {mid: mc.device for mid, mc in models.items() if mc.device}
+    preload = [(mid, mc.kind) for mid, mc in models.items() if mc.preload]
+
     if max_pipelines is None:
         raw_max = env.get(_ENV_PREFIX + "MAX_PIPELINES")
         if raw_max is not None:
@@ -259,8 +289,10 @@ def load_settings(
     return Settings(
         models_root=Path(models_root).expanduser(),
         default_device=default_device,
-        device_map=dict(device_map),
-        preload=list(preload),
         max_pipelines=max_pipelines,
         use_continuous_batching=use_continuous_batching,
+        autoload=autoload,
+        models=dict(models),
+        device_map=device_map,
+        preload=preload,
     )
