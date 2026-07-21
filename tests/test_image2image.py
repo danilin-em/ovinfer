@@ -53,11 +53,6 @@ class PipelineKindTest(unittest.TestCase):
     def test_image2image_is_a_known_kind(self):
         self.assertIn("image2image", config.PIPELINE_KINDS)
 
-    def test_preload_accepts_image2image(self):
-        self.assertEqual(
-            config.parse_preload("org/m:image2image"), [("org/m", "image2image")]
-        )
-
 
 from ovinfer.backend import _decode_image_tensor, _load_image_tensor
 from ovinfer.errors import InvalidImage

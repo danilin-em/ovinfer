@@ -48,34 +48,6 @@ def default_models_root() -> Path:
     return _xdg_data_home() / "ovinfer" / "models"
 
 
-def parse_device_map(raw: str) -> dict[str, str]:
-    """Parse 'org/model=NPU,org/model2=GPU' into {model_id: device}."""
-    device_map: dict[str, str] = {}
-    for entry in filter(None, (e.strip() for e in raw.split(","))):
-        model_id, sep, device = entry.partition("=")
-        if not sep or not model_id.strip() or not device.strip():
-            raise ConfigError(
-                f"Invalid device-map entry {entry!r} (expected MODEL=DEVICE)"
-            )
-        device_map[model_id.strip()] = device.strip()
-    return device_map
-
-
-def parse_preload(raw: str) -> list[tuple[str, str]]:
-    """Parse 'org/model[:kind],...' into (model_id, kind); kind defaults to 'llm'."""
-    entries: list[tuple[str, str]] = []
-    for item in filter(None, (e.strip() for e in raw.split(","))):
-        model_id, sep, kind = item.partition(":")
-        kind = kind.strip() if sep else "llm"
-        if not model_id.strip() or kind not in PIPELINE_KINDS:
-            raise ConfigError(
-                f"Invalid preload entry {item!r} "
-                f"(expected MODEL[:kind], kind one of {PIPELINE_KINDS})"
-            )
-        entries.append((model_id.strip(), kind))
-    return entries
-
-
 _FILE_KEYS = frozenset(
     (
         "models_root",

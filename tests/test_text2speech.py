@@ -16,9 +16,6 @@ class PipelineKindTest(unittest.TestCase):
     def test_tts_is_a_known_kind(self):
         self.assertIn("tts", config.PIPELINE_KINDS)
 
-    def test_preload_accepts_tts(self):
-        self.assertEqual(config.parse_preload("org/m:tts"), [("org/m", "tts")])
-
 
 import tempfile
 from pathlib import Path

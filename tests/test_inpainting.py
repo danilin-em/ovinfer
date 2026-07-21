@@ -63,11 +63,6 @@ class PipelineKindTest(unittest.TestCase):
     def test_inpainting_is_a_known_kind(self):
         self.assertIn("inpainting", config.PIPELINE_KINDS)
 
-    def test_preload_accepts_inpainting(self):
-        self.assertEqual(
-            config.parse_preload("org/m:inpainting"), [("org/m", "inpainting")]
-        )
-
 
 import numpy as np
 

@@ -79,6 +79,7 @@ def _run_server(args: argparse.Namespace) -> None:
             autoload=args.autoload,
             config_file=args.config,
         )
+        backend.validate_configured_models()
         backend.preload_models()
     except OvinferError as exc:
         # ConfigError, ModelNotFound during preload, ... — clean message, no traceback.

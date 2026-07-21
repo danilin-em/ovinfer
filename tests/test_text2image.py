@@ -110,11 +110,6 @@ class PipelineKindTest(unittest.TestCase):
     def test_text2image_is_a_known_kind(self):
         self.assertIn("text2image", config.PIPELINE_KINDS)
 
-    def test_preload_accepts_text2image(self):
-        self.assertEqual(
-            config.parse_preload("org/m:text2image"), [("org/m", "text2image")]
-        )
-
 
 class EncodePngsTest(unittest.TestCase):
     def test_batch_tensor_becomes_one_png_per_image(self):

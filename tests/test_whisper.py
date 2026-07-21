@@ -20,11 +20,6 @@ class PipelineKindTest(unittest.TestCase):
     def test_whisper_is_a_known_kind(self):
         self.assertIn("whisper", config.PIPELINE_KINDS)
 
-    def test_preload_accepts_whisper(self):
-        self.assertEqual(
-            config.parse_preload("org/m:whisper"), [("org/m", "whisper")]
-        )
-
 
 from ovinfer import registry
 
