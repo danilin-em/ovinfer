@@ -399,6 +399,16 @@ class Backend:
     def _device_for(self, model_id: str) -> str:
         return self.settings.device_map.get(model_id, self.settings.default_device)
 
+    def _properties_for(self, model_id: str) -> dict[str, Any]:
+        """OpenVINO construction properties for a model, or {} if none configured.
+
+        Sourced from the model's `config:` map. Unconfigured models (reachable
+        only under autoload) and models without a `config:` yield {}, so their
+        constructor calls are unchanged.
+        """
+        mc = self.settings.models.get(model_id)
+        return dict(mc.config) if mc else {}
+
     def _entry(self, model_id: str, kind: str) -> _CacheEntry:
         """Look up or insert a cache entry; evict the LRU one over capacity."""
         key = (model_id, kind)
@@ -447,10 +457,11 @@ class Backend:
         # build, instead of a raw compiler traceback (LLM) or a request-time
         # 500 (embedding, rerank). Does not change the device or block the attempt.
         npu.warn_if_incompatible(model_id, model_dir, kind, device)
+        props = self._properties_for(model_id)
         if kind == "llm":
-            return og.LLMPipeline(model_dir, device)
+            return og.LLMPipeline(model_dir, device, **props)
         if kind == "vlm":
-            return og.VLMPipeline(model_dir, device)
+            return og.VLMPipeline(model_dir, device, **props)
         if kind == "embedding":
             # og's Config defaults to CLS pooling, which only suits encoder
             # models. Pick per-model (causal LMs need last-token) so unrelated
@@ -462,21 +473,21 @@ class Backend:
                 "mean": og.TextEmbeddingPipeline.PoolingType.MEAN,
                 "last_token": og.TextEmbeddingPipeline.PoolingType.LAST_TOKEN,
             }[registry.embedding_pooling(model_dir)]
-            return og.TextEmbeddingPipeline(model_dir, device, cfg)
+            return og.TextEmbeddingPipeline(model_dir, device, cfg, **props)
         if kind == "rerank":
             cfg = og.TextRerankPipeline.Config()
             cfg.top_n = _RERANK_TOP_N_MAX
-            return og.TextRerankPipeline(model_dir, device, cfg)
+            return og.TextRerankPipeline(model_dir, device, cfg, **props)
         if kind == "text2image":
-            return og.Text2ImagePipeline(model_dir, device)
+            return og.Text2ImagePipeline(model_dir, device, **props)
         if kind == "image2image":
-            return og.Image2ImagePipeline(model_dir, device)
+            return og.Image2ImagePipeline(model_dir, device, **props)
         if kind == "inpainting":
-            return og.InpaintingPipeline(model_dir, device)
+            return og.InpaintingPipeline(model_dir, device, **props)
         if kind == "whisper":
-            return og.WhisperPipeline(model_dir, device)
+            return og.WhisperPipeline(model_dir, device, **props)
         if kind == "tts":
-            return og.Text2SpeechPipeline(model_dir, device)
+            return og.Text2SpeechPipeline(model_dir, device, **props)
         raise ValueError(f"Unknown pipeline kind: {kind!r}")
 
     # -- chat ------------------------------------------------------------------
