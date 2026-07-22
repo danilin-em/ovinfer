@@ -121,11 +121,50 @@ class LoadConfigFileTest(unittest.TestCase):
                 _write("models:\n  org/a:\n    kind: llm\n    config: nope\n")
             )
 
-    def test_config_stub_is_stored(self):
+    def test_config_scalar_values_stored(self):
         cfg = config.load_config_file(
-            _write("models:\n  org/a:\n    kind: llm\n    config:\n      k: v\n")
+            _write(
+                "models:\n  org/a:\n    kind: llm\n    config:\n"
+                "      PERFORMANCE_HINT: LATENCY\n"
+                "      NUM_STREAMS: 2\n"
+                "      RATIO: 0.5\n"
+                "      FLAG: true\n"
+            )
         )
-        self.assertEqual(cfg["models"]["org/a"].config, {"k": "v"})
+        self.assertEqual(
+            cfg["models"]["org/a"].config,
+            {"PERFORMANCE_HINT": "LATENCY", "NUM_STREAMS": 2, "RATIO": 0.5, "FLAG": True},
+        )
+
+    def test_config_numeric_key_is_stringified(self):
+        cfg = config.load_config_file(
+            _write("models:\n  org/a:\n    kind: llm\n    config:\n      123: v\n")
+        )
+        self.assertEqual(cfg["models"]["org/a"].config, {"123": "v"})
+
+    def test_config_list_value_raises(self):
+        with self.assertRaises(ConfigError):
+            config.load_config_file(
+                _write(
+                    "models:\n  org/a:\n    kind: llm\n    config:\n"
+                    "      K:\n        - a\n        - b\n"
+                )
+            )
+
+    def test_config_dict_value_raises(self):
+        with self.assertRaises(ConfigError):
+            config.load_config_file(
+                _write(
+                    "models:\n  org/a:\n    kind: llm\n    config:\n"
+                    "      K:\n        x: y\n"
+                )
+            )
+
+    def test_config_null_value_raises(self):
+        with self.assertRaises(ConfigError):
+            config.load_config_file(
+                _write("models:\n  org/a:\n    kind: llm\n    config:\n      K:\n")
+            )
 
     def test_optional_fields_default(self):
         cfg = config.load_config_file(_write("models:\n  org/a:\n    kind: vlm\n"))

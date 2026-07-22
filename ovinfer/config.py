@@ -33,7 +33,7 @@ class ModelConfig:
     kind: str                       # required; in PIPELINE_KINDS
     device: str | None = None       # None -> default_device
     preload: bool = False           # warm at startup
-    config: dict = field(default_factory=dict)   # reserved stub, ignored
+    config: dict = field(default_factory=dict)   # OpenVINO construction properties (kwargs)
 
 
 _MODEL_ENTRY_KEYS = frozenset(("kind", "device", "preload", "config"))
@@ -114,8 +114,22 @@ def _file_models(raw: object) -> dict[str, "ModelConfig"]:
                 f"models entry {model_id!r}: config must be a mapping, "
                 f"got {type(cfg).__name__}"
             )
+        # config values are OpenVINO construction properties forwarded to the
+        # pipeline constructor as kwargs. YAML expresses only scalars; reject
+        # anything else fail-fast (a nested dict/list or a null value would
+        # otherwise surface as a cryptic og pybind error at pipeline build).
+        # Keys are stringified so the later **props splat never hits a
+        # non-string keyword.
+        props: dict[str, object] = {}
+        for k, v in cfg.items():
+            if not isinstance(v, (str, int, float, bool)):
+                raise ConfigError(
+                    f"models entry {model_id!r}: config value for {str(k)!r} must be "
+                    f"a scalar (str/int/float/bool), got {type(v).__name__}"
+                )
+            props[str(k)] = v
         out[model_id] = ModelConfig(
-            kind=kind, device=device, preload=preload, config=dict(cfg)
+            kind=kind, device=device, preload=preload, config=props
         )
     return out
 
