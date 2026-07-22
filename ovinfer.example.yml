@@ -34,13 +34,22 @@ autoload: false
 # Per-model config. Replaces the old `device_map` + `preload` keys.
 # `kind` is REQUIRED (one of: llm, vlm, embedding, rerank, text2image,
 # image2image, inpainting, whisper, tts). `device`, `preload`, `config` are
-# optional. `config:` is a reserved stub — parsed but ignored for now.
+# optional.
+#
+# `config:` is a map of OpenVINO device/plugin properties forwarded to the
+# pipeline constructor at build time (kwargs). Values must be scalars
+# (string/int/float/bool). Common keys: PERFORMANCE_HINT (LATENCY/THROUGHPUT),
+# NUM_STREAMS, CACHE_DIR, INFERENCE_PRECISION_HINT; NPU: MAX_PROMPT_LEN,
+# MIN_RESPONSE_LEN. An unknown/invalid property fails when the pipeline is
+# built (at startup if preload: true, otherwise on the first request).
 models:
   OpenVINO/qwen2.5-14b-instruct-int4-ov:
     kind: llm
     device: GPU
     preload: true
-    config: {}
+    config:
+      PERFORMANCE_HINT: LATENCY
+      NUM_STREAMS: 2
 
   OpenVINO/Qwen3-Embedding-0.6B-int8-ov:
     kind: embedding

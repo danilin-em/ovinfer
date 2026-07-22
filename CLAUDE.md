@@ -77,8 +77,10 @@ own metadata rather than trusting og's CLS default.
 here, fall through." The `OVINFER_` prefix avoids OpenVINO's own `OV_` variables.
 The file's scalar fields are `models_root`, `default_device`, `max_pipelines`,
 `use_continuous_batching`, `autoload`; per-model settings live in a `models:` map
-(`org/model` -> `{kind (required), device, preload, config-stub}`) that is
-file-only. `Settings.device_map` / `Settings.preload` are **derived** from that
+(`org/model` -> `{kind (required), device, preload, config}`) that is
+file-only. `config` is a map of OpenVINO construction properties (scalar
+values) forwarded to the pipeline constructor as kwargs by
+`Backend._create_pipeline`. `Settings.device_map` / `Settings.preload` are **derived** from that
 map. `autoload` defaults to "no config file given"; when false, `models:` is a
 request whitelist enforced by `Backend._resolve` (unlisted model -> 404), and
 `Backend.validate_configured_models` fails fast at startup on a missing dir.
